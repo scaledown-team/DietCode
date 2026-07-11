@@ -1,0 +1,15 @@
+{
+  "name": "wozcode-deobfuscation-tooling",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Reproduces the webcrack-based pipeline used to deobfuscate and analyze the WOZCODE Claude Code plugin (see ../analysis.md).",
+  "license": "UNLICENSED",
+  "scripts": {
+    "deobfuscate": "./deobfuscate.sh"
+  },
+  "dependencies": {
+    "js-beautify": "^2.0.3",
+    "prettier": "^3.9.5",
+    "webcrack": "^2.16.0"
+  }
+}

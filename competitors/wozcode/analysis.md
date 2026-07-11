@@ -22,6 +22,8 @@ Unlike RTK and Headroom, WOZCODE's distributed code is **deliberately obfuscated
 
 Every claim below is anchored to a specific string literal, schema shape, file path, or config value actually observed in the deobfuscated output or plaintext files — not inferred from variable naming, which carries no signal. Two things are explicitly flagged as unconfirmed where the evidence ran out (the 7 reviewer persona names/prompts; the exact payload consumers of `api.wozcode.com` outside the KB-ingest endpoint) rather than guessed.
 
+**The deobfuscation pipeline itself is checked into this repo and reproducible**: see [`tooling/`](./tooling) for the exact `webcrack`-based script, pinned dependency versions, and a fuller writeup of the obfuscation scheme and how to point the script at a fresh clone of `WithWoz/wozcode-plugin`. The bulk deobfuscated output isn't checked in (WOZCODE's source isn't open-licensed, unlike RTK/Headroom — see `tooling/README.md` for the reasoning); every finding below instead carries its own inline evidence excerpt.
+
 ---
 
 ## 1. Architecture
