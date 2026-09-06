@@ -32,6 +32,10 @@ export interface ProxyConfig {
   disable: boolean;
   /** Enable the optional per-block tool_result compressor (off by default). */
   blockCompress: boolean;
+  /** Force a compaction step after this many new turns, even under compactThreshold. */
+  foldEveryTurns: number;
+  /** Disable adding a cache_control breakpoint to the folded summary block. */
+  cacheControlDisable: boolean;
 }
 
 export function loadProxyConfig(): ProxyConfig {
@@ -54,6 +58,8 @@ export function loadProxyConfig(): ProxyConfig {
     compactThreshold: intEnv("SCALEDOWN_PROXY_COMPACT_THRESHOLD", 50000),
     disable: process.env.SCALEDOWN_PROXY_DISABLE === "true",
     blockCompress: process.env.SCALEDOWN_PROXY_BLOCK_COMPRESS === "true",
+    foldEveryTurns: intEnv("SCALEDOWN_PROXY_FOLD_TURNS", 3),
+    cacheControlDisable: process.env.SCALEDOWN_PROXY_CACHE_CONTROL_DISABLE === "true",
   };
 }
 

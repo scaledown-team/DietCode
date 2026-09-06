@@ -17,14 +17,10 @@ And — the big one for **real, per-turn token savings** — an optional **proxy
 
 > **Why not a `PreCompact` hook?** Claude Code's `PreCompact` hook can't replace the compaction summary or remove anything from the window — it can only append (see [anthropics/claude-code#24965](https://github.com/anthropics/claude-code/issues/24965)). Injecting a summary there *costs* tokens rather than saving them, so the real work happens in the proxy, where DietCode controls the request payload.
 
-On top of that, your agent gains tools it can call on demand in **all three clients**:
+Compression, summarization, classification, and extraction all happen automatically — driven by DietCode's own hooks and proxy — rather than being left for the agent to decide to call. That keeps their schemas out of every request's tool list and skips the extra tool-call round trip a model-initiated call would cost. The one tool actually exposed to the agent, in **all three clients**, is:
 
 | Tool | What it does |
 |---|---|
-| `sd_compress` | Compress a large context block before a needle-in-a-haystack query |
-| `sd_summarize` | Abstractively summarize text to compact long conversations |
-| `sd_classify` | Classify text against custom labels (bug vs. feature vs. question) |
-| `sd_extract` | Extract named entities or structured data from any text |
 | `sd_retrieve` | Pull back the original text behind a proxy summary marker (reversibility) |
 
 > **Status line / savings display is Claude Code only.** Cursor and Codex CLI have no status-line API, so token savings still happen there but aren't displayed. This is an npm CLI plugin — there is no VS Code/IDE extension; the "status line" refers to Claude Code's terminal status line.

@@ -406,12 +406,10 @@ Environment variables:
   SCALEDOWN_PROXY_RECENT_TURNS=N     — recent turns kept verbatim by the proxy (default: 4)
   SCALEDOWN_PROXY_DISABLE=true       — make the proxy a pure passthrough (no compaction)
 
-On-demand MCP tools Claude can call:
-  • sd_compress   — compress a large context block
-  • sd_summarize  — abstractively summarize text
-  • sd_classify   — classify text with custom labels
-  • sd_extract    — extract named entities / structured data
+MCP tool Claude can call:
   • sd_retrieve   — pull back the original text behind a proxy summary marker
+                    (compress/summarize/classify/extract run automatically via
+                    hooks and the proxy — no tool call needed)
 
 Restart Claude Code for changes to take effect.
 Docs: https://docs.scaledown.ai

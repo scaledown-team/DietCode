@@ -61,6 +61,8 @@ function makeConfig(upstreamUrl: string): Config {
       compactThreshold: 1, // force a compaction step
       disable: false,
       blockCompress: false,
+      foldEveryTurns: 3,
+      cacheControlDisable: false,
     },
   };
 }
