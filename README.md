@@ -107,7 +107,7 @@ claude
 
 > **Supported clients:** Claude Code · Cursor · OpenAI Codex CLI
 >
-> The MCP tools (`sd_compress`, `sd_summarize`, `sd_classify`, `sd_extract`) work in all three clients. Automatic hooks (`UserPromptSubmit`, `PostToolUse`, `PreCompact`) work in Claude Code and Codex CLI. Cursor has no hook system — use the [Cursor rules](#cursor) to drive proactive tool use instead.
+> Compression, summarization, classification, and extraction are applied automatically by DietCode's hooks (`UserPromptSubmit`, `PostToolUse`, `PreCompact`) rather than left as agent-invocable tools — this works in Claude Code and Codex CLI, both of which support these hook events. **Cursor has no hook system**, so it currently gets none of this: the [Cursor rules](#cursor) file previously drove the same behavior by telling the agent to call these as MCP tools, but they're no longer exposed as agent-facing tools in any client (see [Feature comparison](#feature-comparison)). `sd_retrieve` — for pulling back an original behind a proxy summary marker — is the one tool still exposed everywhere, though it only has anything to retrieve in a Claude Code proxy session.
 
 - Node.js 18 or later
 - A Scaledown API key, free at [scaledown.ai/dashboard](https://scaledown.ai/dashboard)
@@ -208,27 +208,9 @@ Create `.cursor/mcp.json` (or `~/.cursor/mcp.json` for global use):
   }
 }
 ```
-Restart Cursor. The four tools appear in Agent mode.
+Restart Cursor. `sd_retrieve` appears in Agent mode.
 
-**4. Restart Cursor.** The four DietCode tools will be available in Agent mode.
-
-**5. (Recommended) Add Cursor rules**
-
-Cursor has no hooks system, but you can give the agent behavioral guidance via `.cursor/rules/`:
-
-```bash
-# Global (applies to all projects)
-mkdir -p ~/.cursor/rules
-cp node_modules/dietcode/cursor-rules/dietcode.mdc ~/.cursor/rules/
-
-# Or project-level
-mkdir -p .cursor/rules
-cp node_modules/dietcode/cursor-rules/dietcode.mdc .cursor/rules/
-```
-
-Or run `dietcode setup` and answer **y** when asked about Cursor — it writes the file for you.
-
-This instructs the agent to call `sd_compress` before large file reads, `sd_summarize` after web fetches, and `sd_classify` at the start of ambiguous tasks.
+**Cursor currently gets no DietCode optimization.** Compression, summarization, classification, and extraction are applied by DietCode's hooks in Claude Code and Codex CLI, and Cursor has no hook system to run them through — the only mechanism it ever had was the agent calling those four as MCP tools directly, and they're no longer exposed as agent-facing tools (see [Feature comparison](#feature-comparison) and the note above). The `cursor-rules/dietcode.mdc` file (installable via `.cursor/rules/`, or `dietcode setup` answering **y** for Cursor) is kept for reference but currently has nothing to instruct the agent to call.
 
 ---
 
@@ -294,22 +276,19 @@ cp node_modules/dietcode/agents-md/AGENTS.md ./AGENTS.md
 
 | Feature | Claude Code | Cursor | Codex CLI |
 |---|---|---|---|
-| `sd_compress` tool | ✅ | ✅ | ✅ |
-| `sd_summarize` tool | ✅ | ✅ | ✅ |
-| `sd_classify` tool | ✅ | ✅ | ✅ |
-| `sd_extract` tool | ✅ | ✅ | ✅ |
-| Auto intent hints on every prompt | ✅ hook | ✅ via rules¹ | ✅ hook |
-| Auto compression (large prompts) | ✅ hook | ✅ via rules¹ | ✅ hook |
-| Auto tool output compression | ✅ hook | ✅ via rules¹ | ✅ hook (Bash only)² |
+| `sd_retrieve` tool | ✅ | ✅ | ✅ |
+| Auto intent hints on every prompt | ✅ hook | ❌⁵ | ✅ hook |
+| Auto compression (large prompts) | ✅ hook | ❌⁵ | ✅ hook |
+| Auto tool output compression | ✅ hook | ❌⁵ | ✅ hook (Bash only)² |
 | Progressive compaction w/ real token savings (Scaledown summarize model) | ✅ proxy⁴ | ❌ | ❌ |
 | Token-savings status line | ✅ | ❌³ | ❌³ |
 | Context progress bar | ✅ | ❌³ | ❌³ |
 | Auto config re-sync on update | ✅ | ✅ | ✅ |
 
-¹ Cursor rules instruct the agent to call DietCode tools proactively — not a true hook, but effective in Agent mode.
 ² Codex CLI's `PostToolUse` fires only for Bash tool events, not file reads or MCP calls.
 ³ Cursor and Codex CLI expose no status-line API. Savings still accrue (tracked in `~/.scaledown/stats.json`) but there is no place to display them.
 ⁴ Proxy mode is opt-in via `dietcode claude` and is Claude Code only (it speaks the Anthropic Messages API). See [Proxy mode](#proxy-mode-real-token-savings).
+⁵ Cursor has no hook system. It previously got these via the agent calling `sd_compress`/`sd_summarize`/`sd_classify`/`sd_extract` as MCP tools directly, but those are no longer exposed as agent-facing tools in any client (kept off the `tools` list Claude Code/Codex CLI already handle automatically via hooks), so Cursor currently has no path to them at all.
 
 ---
 
@@ -321,12 +300,9 @@ cp node_modules/dietcode/agents-md/AGENTS.md ./AGENTS.md
 Find all places where we call the payments API
 ```
 
-**On-demand tools:** ask the agent directly:
+**On-demand tool:** in a Claude Code proxy session, if a summary marker omits a detail you need:
 ```
-Use sd_compress to compress this before searching through it: [paste large codebase]
-Use sd_summarize to condense this thread so we can keep working
-Use sd_classify to categorize these GitHub issues as bug, feature, or question
-Use sd_extract to pull function names, file paths, and error codes from this stack trace
+Use sd_retrieve("<id from the marker>") to pull back the full original text
 ```
 
 ---
