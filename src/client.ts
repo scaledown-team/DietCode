@@ -173,9 +173,9 @@ export class ScaledownClient {
       text,
       ...(instructions !== undefined && { instructions }),
       ...(maxTokens !== undefined && { max_tokens: maxTokens }),
-      // Structured message blocks (tool_use/tool_result included) for the
-      // heuristic tool-result-stripping path server-side keys off x-source
-      // (see routing.py) to skip the model call entirely for this client.
+      // Structured message blocks (tool_use/tool_result included), sent
+      // alongside the flattened `text` above so the backend can process tool
+      // output structurally rather than relying only on the flattened text.
       ...(messages !== undefined && { messages }),
     });
   }

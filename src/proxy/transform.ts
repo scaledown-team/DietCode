@@ -14,14 +14,11 @@
 // been folded into `runningSummary`; only messages after it are live and
 // eligible for the next fold.
 //
-// The aged chunk is sent to ScaleDown as structured message blocks (not
-// flattened text) so the server can, for DietCode's traffic specifically
-// (x-source: kode), heuristically strip tool_result content instead of
-// running a model over it — cheaper and deterministic, since deduping/
-// discarding stale tool output doesn't need generation. Other ScaleDown
-// clients that only send `text` keep getting the model-based abstractive
-// summary. Either way the response shape (summary + input/output chars) is
-// the same, so this file doesn't need to know which path served it.
+// The aged chunk is sent to ScaleDown as structured message blocks alongside
+// the flattened text, so the backend can process tool_use/tool_result content
+// structurally rather than relying only on flattened text. This file doesn't
+// need to know how the backend uses that — only that the response shape
+// (summary + input/output chars) is the same either way.
 //
 // Cache safety: `system`, `tools`, and the verbatim tail are never modified.
 // The folded summary block is byte-identical between compaction steps (it is
@@ -58,10 +55,8 @@ export interface SummarizeResult {
 
 export interface TransformDeps {
   /** Injected so tests can run without a live ScaledownClient. `messages` is
-   * the structured aged chunk (tool_use/tool_result blocks intact); passing
-   * it lets ScaleDown's heuristic tool-result-stripping path run server-side
-   * for DietCode's traffic instead of a model call, without this file needing
-   * to know that decision is being made. */
+   * the structured aged chunk (tool_use/tool_result blocks intact), sent
+   * alongside the flattened text so the backend can process it structurally. */
   summarize: (
     text: string,
     instructions?: string,
@@ -267,10 +262,10 @@ export async function transformRequest(
       ? `[Existing summary]\n${working.runningSummary}\n\n[New turns]\n${serialize(newlyAged)}`
       : serialize(newlyAged);
     try {
-      // Send structured blocks alongside the flattened `input` text: the
-      // server uses `messages` (when present, for x-source: kode) to run its
-      // heuristic tool-result strip instead of a model call, but still needs
-      // `input`/instructions for the existing-summary-merge framing either way.
+      // Send structured blocks alongside the flattened `input` text — the
+      // backend can process tool_use/tool_result content structurally when
+      // `messages` is present, but still needs `input`/instructions for the
+      // existing-summary-merge framing either way.
       const result = await deps.summarize(input, SUMMARY_INSTRUCTIONS, newlyAged);
       const summary = result.summary;
       if (summary && summary.trim()) {
