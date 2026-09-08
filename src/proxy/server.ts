@@ -56,13 +56,20 @@ function outboundHeaders(req: IncomingMessage): Record<string, string> {
   return headers;
 }
 
+// Headers describing the upstream *wire* response that no longer apply once
+// undici's fetch has already decompressed the body for us (upstream.body):
+// forwarding content-encoding/content-length here would tell the client to
+// decompress an already-plain body, which fails (e.g. BrotliDecompressionError
+// in Claude Code's own fetch client).
+const STRIP_RESPONSE_HEADERS = new Set(["content-encoding", "content-length"]);
+
 async function pipeUpstream(
   upstream: Response,
   res: ServerResponse
 ): Promise<void> {
   const headers: Record<string, string> = {};
   upstream.headers.forEach((value, key) => {
-    if (key.toLowerCase() === "content-length") return; // may change; let Node set
+    if (STRIP_RESPONSE_HEADERS.has(key.toLowerCase())) return;
     headers[key] = value;
   });
   res.writeHead(upstream.status, headers);
@@ -75,8 +82,12 @@ async function pipeUpstream(
 
 export function createProxyServer(config: Config, client: ScaledownClient): Server {
   const { proxy } = config;
-  const summarize = (text: string, instructions?: string) =>
-    client.summarize(text, instructions).then((r) => r.summary);
+  const summarize = (text: string, instructions?: string, messages?: unknown[]) =>
+    client.summarize(text, instructions, undefined, messages).then((r) => ({
+      summary: r.summary,
+      inputChars: r.input_chars,
+      outputChars: r.output_chars,
+    }));
 
   return createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -96,7 +107,8 @@ export function createProxyServer(config: Config, client: ScaledownClient): Serv
         if (result.compacted) {
           saveSessionState(sessionId, result.state);
           process.stderr.write(
-            `dietcode proxy: compaction step (session ${sessionId.slice(0, 8)}) — saved ~${result.savedTokens} tokens\n`
+            `dietcode proxy: compaction step (session ${sessionId.slice(0, 8)}) — ` +
+              `saved ~${result.savedTokens} tokens (~$${result.netSavingsUsd.toFixed(4)})\n`
           );
         }
         if (result.savedTokens > 0) addSaving(sessionId, result.savedTokens);

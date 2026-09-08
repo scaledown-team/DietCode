@@ -166,12 +166,17 @@ export class ScaledownClient {
   async summarize(
     text: string,
     instructions?: string,
-    maxTokens?: number
+    maxTokens?: number,
+    messages?: unknown[]
   ): Promise<SummarizeResponse> {
     return this.post<SummarizeResponse>("/summarization/abstractive", {
       text,
       ...(instructions !== undefined && { instructions }),
       ...(maxTokens !== undefined && { max_tokens: maxTokens }),
+      // Structured message blocks (tool_use/tool_result included), sent
+      // alongside the flattened `text` above so the backend can process tool
+      // output structurally rather than relying only on the flattened text.
+      ...(messages !== undefined && { messages }),
     });
   }
 

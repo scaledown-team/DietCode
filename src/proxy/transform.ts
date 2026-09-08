@@ -1,21 +1,24 @@
 // Progressive compaction for the DietCode proxy.
 //
-// The key property: we do NOT summarize on every request. We keep a per-session
-// "running summary" standing in for the oldest turns, plus a verbatim "hot
-// window" of everything since. Most requests just forward (summary + hot
-// window) with zero ScaleDown calls. A compaction step — one ScaleDown call
-// that folds the older part of the hot window into the running summary — fires
-// when EITHER (summary + hot window) exceeds `compactThreshold` (a safety net
-// for a single turn that dumps a huge tool result) OR `foldEveryTurns` new
-// turns have accumulated since the last fold (a steady cadence that keeps
-// stale/duplicate tool output — repeated file reads, re-run commands — from
-// sitting in the live window for long). `state.agedThrough` is the boundary:
-// everything at or before it has already been folded into `runningSummary` by
-// ScaleDown; only messages after it are live and eligible for the next fold.
-// Deduplicating repeated tool output is instructions to ScaleDown's summarize
-// call (see SUMMARY_INSTRUCTIONS below), not separate local logic — the fold
-// input already contains every duplicate, and the model is told to collapse
-// them itself.
+// The key property: we do NOT call ScaleDown on every request. We keep a
+// per-session "running summary" standing in for the oldest turns, plus a
+// verbatim "hot window" of everything since. Most requests just forward
+// (summary + hot window) with zero ScaleDown calls. A compaction step — one
+// ScaleDown call that folds the older part of the hot window into the running
+// summary — fires when EITHER (summary + hot window) exceeds
+// `compactThreshold` (a safety net for a single turn that dumps a huge tool
+// result) OR `foldEveryTurns` new turns have accumulated since the last fold
+// (a steady cadence that keeps stale/duplicate tool output — repeated file
+// reads, re-run commands — from sitting in the live window for long).
+// `state.agedThrough` is the boundary: everything at or before it has already
+// been folded into `runningSummary`; only messages after it are live and
+// eligible for the next fold.
+//
+// The aged chunk is sent to ScaleDown as structured message blocks alongside
+// the flattened text, so the backend can process tool_use/tool_result content
+// structurally rather than relying only on flattened text. This file doesn't
+// need to know how the backend uses that — only that the response shape
+// (summary + input/output chars) is the same either way.
 //
 // Cache safety: `system`, `tools`, and the verbatim tail are never modified.
 // The folded summary block is byte-identical between compaction steps (it is
@@ -42,18 +45,44 @@ export interface MessagesBody {
   [k: string]: unknown;
 }
 
+export interface SummarizeResult {
+  summary: string;
+  /** Chars sent to ScaleDown for this fold — used to net the call's own cost out of savedTokens. */
+  inputChars: number;
+  /** Chars ScaleDown returned — used to net the call's own cost out of savedTokens. */
+  outputChars: number;
+}
+
 export interface TransformDeps {
-  /** Injected so tests can run without a live ScaledownClient. */
-  summarize: (text: string, instructions?: string) => Promise<string>;
+  /** Injected so tests can run without a live ScaledownClient. `messages` is
+   * the structured aged chunk (tool_use/tool_result blocks intact), sent
+   * alongside the flattened text so the backend can process it structurally. */
+  summarize: (
+    text: string,
+    instructions?: string,
+    messages?: AnthropicMessage[]
+  ) => Promise<SummarizeResult>;
 }
 
 export interface TransformResult {
   body: MessagesBody;
+  /** Token-equivalent of netSavingsUsd (netSavingsUsd / ANTHROPIC_CACHE_READ_PER_TOKEN), for callers that still want a token figure. */
   savedTokens: number;
+  /** Net dollar savings: Anthropic-side cost avoided by folding, minus the ScaleDown call's own dollar cost. Can be negative if a fold cost more than it saved. */
+  netSavingsUsd: number;
   state: SessionState;
   /** True iff a ScaleDown call happened on this request (a compaction step). */
   compacted: boolean;
 }
+
+// Pricing for netting ScaleDown's call cost against the Anthropic tokens it
+// saves — these are two very different rates (ScaleDown is ~0.05/MTok with no
+// output charge; Anthropic cache read/write is priced per-token at a much
+// higher rate), so netting raw TOKEN COUNTS 1:1 previously made an extremely
+// cheap ScaleDown call look like it cost more than it saved even when the real
+// dollar savings were strongly positive. Comparing in dollars fixes that.
+const ANTHROPIC_CACHE_READ_PER_TOKEN = 0.3 / 1_000_000;
+const SCALEDOWN_PER_TOKEN = 0.05 / 1_000_000;
 
 const SUMMARY_INSTRUCTIONS =
   "Summarize this software-engineering conversation concisely, preserving key " +
@@ -193,7 +222,7 @@ export async function transformRequest(
 ): Promise<TransformResult> {
   const messages = body.messages;
   if (!Array.isArray(messages) || messages.length === 0) {
-    return { body, savedTokens: 0, state, compacted: false };
+    return { body, savedTokens: 0, netSavingsUsd: 0, state, compacted: false };
   }
 
   // Defensive: if history shrank below where we'd aged to (new/forked
@@ -206,6 +235,13 @@ export async function transformRequest(
 
   let compacted = false;
   let retrieveId = state.runningSummary ? putOriginal(state.runningSummary, state.runningSummary) : "";
+  // ScaleDown-side dollar cost of a compaction step's own summarize call —
+  // netted out of netSavingsUsd below so the reported number reflects total
+  // spend, not just the Anthropic-side message-size delta. Priced in dollars
+  // (not raw token counts) because ScaleDown and Anthropic tokens cost very
+  // different amounts per token — see ANTHROPIC_CACHE_READ_PER_TOKEN /
+  // SCALEDOWN_PER_TOKEN above.
+  let summarizeCallCostUsd = 0;
 
   // Decide whether this request needs a compaction step: either the live
   // window has crossed the token budget (safety net), or foldEveryTurns new
@@ -226,12 +262,19 @@ export async function transformRequest(
       ? `[Existing summary]\n${working.runningSummary}\n\n[New turns]\n${serialize(newlyAged)}`
       : serialize(newlyAged);
     try {
-      const summary = await deps.summarize(input, SUMMARY_INSTRUCTIONS);
+      // Send structured blocks alongside the flattened `input` text — the
+      // backend can process tool_use/tool_result content structurally when
+      // `messages` is present, but still needs `input`/instructions for the
+      // existing-summary-merge framing either way.
+      const result = await deps.summarize(input, SUMMARY_INSTRUCTIONS, newlyAged);
+      const summary = result.summary;
       if (summary && summary.trim()) {
         // Store the full aged transcript for sd_retrieve reversibility.
         retrieveId = putOriginal(serialize(messages.slice(0, boundary)), summary);
         working = { runningSummary: summary, agedThrough: boundary, updatedAt: "" };
         compacted = true;
+        const scaledownTokens = Math.ceil((result.inputChars + result.outputChars) / 4);
+        summarizeCallCostUsd = scaledownTokens * SCALEDOWN_PER_TOKEN;
       }
     } catch {
       // Fail-open: keep the prior state, forward without a new summary.
@@ -246,14 +289,26 @@ export async function transformRequest(
       MAX_CACHE_BREAKPOINTS;
 
   const forwarded = applySummary(messages, working, retrieveId, addCacheControl);
-  const savedTokens = Math.max(
-    0,
-    estimateTokens(JSON.stringify(messages)) - estimateTokens(JSON.stringify(forwarded))
-  );
+  // Anthropic-side tokens avoided by folding — priced as cache reads, since
+  // those tokens would otherwise sit in the live window and be re-read (at
+  // minimum) on every subsequent request.
+  const anthropicTokensAvoided =
+    estimateTokens(JSON.stringify(messages)) - estimateTokens(JSON.stringify(forwarded));
+  const anthropicSavingsUsd = Math.max(0, anthropicTokensAvoided) * ANTHROPIC_CACHE_READ_PER_TOKEN;
+  // Net dollar savings = what folding avoided on the Anthropic side minus what
+  // the ScaleDown call itself cost. Comparing in dollars (not raw token
+  // counts) matters because the two are priced very differently — see
+  // ANTHROPIC_CACHE_READ_PER_TOKEN / SCALEDOWN_PER_TOKEN above.
+  const netSavingsUsd = anthropicSavingsUsd - summarizeCallCostUsd;
+  // Token-equivalent of netSavingsUsd, for callers that want a token figure
+  // rather than a dollar one. Clamped at 0: a fold that cost more (in real
+  // dollars) than it saved reports no savings rather than a negative token count.
+  const savedTokens = Math.max(0, Math.round(netSavingsUsd / ANTHROPIC_CACHE_READ_PER_TOKEN));
 
   return {
     body: { ...body, messages: forwarded },
     savedTokens,
+    netSavingsUsd,
     state: working,
     compacted,
   };

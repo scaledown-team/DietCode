@@ -33,6 +33,10 @@ const baseConfig: ProxyConfig = {
 
 const EMPTY: SessionState = { runningSummary: "", agedThrough: 0, updatedAt: "" };
 
+function summarizeResult(summary: string, inputChars = 0, outputChars = 0) {
+  return { summary, inputChars: inputChars || summary.length, outputChars: outputChars || summary.length };
+}
+
 // 4 user prompts (idx 0,2,4,6) + assistants between.
 function sampleMessages(): MessagesBody["messages"] {
   return [
@@ -91,7 +95,7 @@ describe("under the compaction threshold", () => {
 
 describe("at a compaction step (over threshold)", () => {
   it("calls summarize exactly once, folds the summary in, and advances state", async () => {
-    const summarize = jest.fn().mockResolvedValue("FRESH SUMMARY");
+    const summarize = jest.fn().mockResolvedValue(summarizeResult("FRESH SUMMARY"));
     const res = await transformRequest(body(), { ...EMPTY }, { ...baseConfig, compactThreshold: 1 }, {
       summarize,
     });
@@ -107,7 +111,7 @@ describe("at a compaction step (over threshold)", () => {
   });
 
   it("asks ScaleDown to dedupe repeated tool output rather than describe it", async () => {
-    const summarize = jest.fn().mockResolvedValue("FRESH SUMMARY");
+    const summarize = jest.fn().mockResolvedValue(summarizeResult("FRESH SUMMARY"));
     await transformRequest(body(), { ...EMPTY }, { ...baseConfig, compactThreshold: 1 }, { summarize });
 
     const instructions = summarize.mock.calls[0][1] as string;
@@ -115,7 +119,7 @@ describe("at a compaction step (over threshold)", () => {
   });
 
   it("reports positive savings when the aged content is large", async () => {
-    const summarize = jest.fn().mockResolvedValue("TINY SUMMARY");
+    const summarize = jest.fn().mockResolvedValue(summarizeResult("TINY SUMMARY"));
     const big = "lorem ipsum ".repeat(500); // ~6k chars per message
     const heavy: MessagesBody = {
       messages: [
@@ -136,7 +140,7 @@ describe("at a compaction step (over threshold)", () => {
   });
 
   it("extends the prior summary rather than starting over", async () => {
-    const summarize = jest.fn().mockResolvedValue("MERGED");
+    const summarize = jest.fn().mockResolvedValue(summarizeResult("MERGED"));
     const state: SessionState = { runningSummary: "PRIOR", agedThrough: 2, updatedAt: "" };
     await transformRequest(body(), state, { ...baseConfig, compactThreshold: 1 }, { summarize });
     const input = summarize.mock.calls[0][0] as string;
@@ -144,7 +148,7 @@ describe("at a compaction step (over threshold)", () => {
   });
 
   it("never touches system or tools", async () => {
-    const summarize = jest.fn().mockResolvedValue("S");
+    const summarize = jest.fn().mockResolvedValue(summarizeResult("S"));
     const b = body();
     const res = await transformRequest(b, { ...EMPTY }, { ...baseConfig, compactThreshold: 1 }, {
       summarize,
@@ -198,7 +202,7 @@ describe("turn-cadence trigger", () => {
   });
 
   it("folds once foldEveryTurns new turns have accumulated, even under the token threshold", async () => {
-    const summarize = jest.fn().mockResolvedValue("CADENCE SUMMARY");
+    const summarize = jest.fn().mockResolvedValue(summarizeResult("CADENCE SUMMARY"));
     // 5 user prompts (idx 0,2,4,6,8); recentTurns=2 leaves 3 foldable turns.
     const many: MessagesBody = {
       messages: [
