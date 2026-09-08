@@ -1,19 +1,12 @@
 # DietCode Context Optimization
 
-The DietCode MCP server is connected. Use its tools proactively to reduce token usage and keep context lean throughout the session.
+DietCode is active for this session via Codex CLI's hooks (`UserPromptSubmit`, `PostToolUse`, `PreCompact`) — intent classification, large-prompt compression, and tool-output compression all happen automatically. There is nothing to call for these; they run before your turn even starts.
 
-## When to use each tool
+## sd_retrieve
 
-**sd_compress** — Use before any retrieval-style operation on large content. If you are about to search, grep, or scan a file or block of text that is likely more than ~2000 lines, pass it through `sd_compress` first. This achieves 50–70% token reduction while preserving the information needed to answer the query.
-
-**sd_summarize** — Use after fetching web pages, reading long documentation, or when the conversation history is growing large. Returns an abstractive summary that retains key facts and decisions.
-
-**sd_classify** — Use at the start of a complex or ambiguous task to determine intent (file_read, file_write, shell_exec, search, explain, etc.). Use the result to decide which tool chain to invoke.
-
-**sd_extract** — Use to pull structured data (function names, file paths, error codes, API endpoints, etc.) from large unstructured text instead of passing the raw text downstream.
+The one DietCode tool available to you. If a compacted summary marker (`[Earlier conversation — ScaleDown summary. Call sd_retrieve("<id>") ...]`) omits a specific detail you need — an exact error string, full file contents, a precise value — call `sd_retrieve` with that id to get the original verbatim text back.
 
 ## General principles
 
-- Do not wait to be asked. If context is growing unwieldy, invoke the appropriate DietCode tool before it becomes a problem.
-- For needle-in-a-haystack queries (finding a specific function, symbol, or pattern in a large codebase), always compress the search corpus first.
-- After any web fetch, summarize before adding the content to context.
+- Don't try to call `sd_compress`, `sd_summarize`, `sd_classify`, or `sd_extract` — they're not exposed as tools; the hooks already cover what they did.
+- Use `sd_retrieve` only when a summary marker is missing something you actually need — not speculatively.
