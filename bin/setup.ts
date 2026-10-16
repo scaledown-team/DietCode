@@ -119,11 +119,14 @@ function storeApiKey(apiKey: string): void {
 
 function registerMcp(): void {
   const entryPoint = resolve(DIST_ROOT, "src", "index.js");
-  // Migrate the pre-rename MCP id if present (best-effort, ignore if absent).
-  try {
-    execSync("claude mcp remove --scope user scaledown", { stdio: "ignore" });
-  } catch {
-    // not registered under the old name — fine
+  // Remove the current id (re-running setup, e.g. to change the key, would
+  // otherwise fail with "already exists") and the pre-rename id. Best-effort.
+  for (const id of ["dietcode", "scaledown"]) {
+    try {
+      execSync(`claude mcp remove --scope user ${id}`, { stdio: "ignore" });
+    } catch {
+      // not registered under this id — fine
+    }
   }
   try {
     execSync(`claude mcp add --scope user dietcode -- node "${entryPoint}"`, {
@@ -300,13 +303,15 @@ async function main(): Promise<void> {
       err instanceof Error && "status" in err
         ? (err as { status: number }).status
         : null;
-    if (status === 401) {
+    // ScaleDown answers 403 (not 401) for a bad or empty key; saving it would
+    // make every later hook call and proxy fold fail.
+    if (status === 401 || status === 403) {
       console.error(
         "  ✗ Invalid API key. Check your key at https://scaledown.ai/dashboard"
       );
       process.exit(1);
     }
-    // Non-auth errors (network, 500) — warn but continue
+    // Non-auth errors (network, 5xx) — warn but continue
     console.warn(
       `  ⚠ Could not validate key (${String(err)}). Continuing anyway.`
     );

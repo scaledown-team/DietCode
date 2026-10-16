@@ -29,6 +29,11 @@ export interface SessionState {
   runningSummary: string;
   /** Count of leading messages already folded into runningSummary. */
   agedThrough: number;
+  /** sd_retrieve id of the full transcript behind runningSummary (set at each fold). */
+  retrieveId?: string;
+  /** Fingerprint of messages[0, agedThrough) at the last fold, to detect a
+   * different conversation that maps to the same session key. */
+  prefixHash?: string;
   updatedAt: string;
 }
 
@@ -63,6 +68,8 @@ export function loadSessionState(sessionId: string): SessionState {
       return {
         runningSummary: parsed.runningSummary ?? "",
         agedThrough: parsed.agedThrough ?? 0,
+        ...(parsed.retrieveId && { retrieveId: parsed.retrieveId }),
+        ...(parsed.prefixHash && { prefixHash: parsed.prefixHash }),
         updatedAt: parsed.updatedAt ?? "",
       };
     }

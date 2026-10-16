@@ -8,11 +8,14 @@ interface StatsFile {
   totalSaved: number;
   totalRequests: number;
   sessions: Record<string, number>;
-  contextWindow?: { current_tokens: number; max_tokens: number };
+  sessionRequests?: Record<string, number>;
 }
 
 interface SessionInput {
   session_id?: string;
+  // Claude Code's own view of this session's context; used_percentage is null
+  // until the first response.
+  context_window?: { used_percentage?: number | null };
   [key: string]: unknown;
 }
 
@@ -55,9 +58,12 @@ function readStdin(): Promise<string> {
 async function main(): Promise<void> {
   const raw = await readStdin();
   let sessionId = "unknown";
+  let usedPct: number | null = null;
   try {
     const input = JSON.parse(raw) as SessionInput;
     if (input.session_id) sessionId = input.session_id;
+    const used = input.context_window?.used_percentage;
+    if (typeof used === "number" && Number.isFinite(used)) usedPct = used;
   } catch {
     // use unknown
   }
@@ -65,25 +71,27 @@ async function main(): Promise<void> {
   // Self-heal harness config at most once a day (no-op otherwise).
   reconcileIfStale();
 
+  // This session's numbers only. The proxy and hooks record savings under
+  // Claude Code's session id; the context bar is Claude Code's own figure for
+  // this session, which in a proxy session reflects the compacted request.
   const stats = readStats();
-  const totalSaved = stats.totalSaved ?? 0;
-  const totalRequests = stats.totalRequests ?? 0;
-  const ctx = stats.contextWindow;
+  const saved = stats.sessions?.[sessionId] ?? 0;
+  const requests = stats.sessionRequests?.[sessionId] ?? 0;
 
   const parts: string[] = [];
 
-  if (ctx && ctx.max_tokens > 0) {
-    const pct = Math.round((ctx.current_tokens / ctx.max_tokens) * 100);
+  if (usedPct !== null) {
+    const pct = Math.min(100, Math.max(0, Math.round(usedPct)));
     const filled = Math.round((pct / 100) * 10);
     const bar = "█".repeat(filled) + "░".repeat(10 - filled);
     parts.push(`[${bar}] ${pct}% ctx`);
   }
 
-  parts.push(`↓ ${formatTokenCount(totalSaved)} saved`);
-  if (totalRequests > 0) parts.push(`${totalRequests} reqs`);
+  parts.push(`↓ ${formatTokenCount(saved)} saved`);
+  if (requests > 0) parts.push(`${requests} reqs`);
 
   // Off-proxy nudge: compaction (real token savings) only runs via the proxy.
-  if (!proxyActive()) parts.push("DietCode compaction off");
+  if (!proxyActive()) parts.push("compaction off: start with `dietcode claude`");
 
   try {
     const update = await checkForUpdate();

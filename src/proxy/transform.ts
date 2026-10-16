@@ -20,6 +20,11 @@
 // need to know how the backend uses that — only that the response shape
 // (summary + input/output chars) is the same either way.
 //
+// Note: the proxy's summarize (src/proxy/server.ts) currently drops the
+// structured blocks and sends only the flattened text, because the endpoint
+// skips the model when `messages` is present. See commit "proxy: stop sending
+// structured messages to the summarize endpoint".
+//
 // Cache safety: `system`, `tools`, and the verbatim tail are never modified.
 // The folded summary block is byte-identical between compaction steps (it is
 // derived from fixed history), so Anthropic's prompt cache keeps hitting; it
@@ -31,7 +36,7 @@
 
 import { estimateTokens } from "../niah.js";
 import type { ProxyConfig } from "../config.js";
-import { putOriginal, type SessionState } from "./store.js";
+import { putOriginal, shortHash, type SessionState } from "./store.js";
 
 export interface AnthropicMessage {
   role: string;
@@ -56,7 +61,8 @@ export interface SummarizeResult {
 export interface TransformDeps {
   /** Injected so tests can run without a live ScaledownClient. `messages` is
    * the structured aged chunk (tool_use/tool_result blocks intact), sent
-   * alongside the flattened text so the backend can process it structurally. */
+   * alongside the flattened text so the backend can process it structurally.
+   * (The proxy's implementation currently ignores it; see the note above.) */
   summarize: (
     text: string,
     instructions?: string,
@@ -178,14 +184,32 @@ function buildPreamble(summary: string, retrieveId: string): string {
   );
 }
 
-// Counts existing cache_control breakpoints in a `system` or `tools` array
-// (the only places besides messages Anthropic allows them, and the only two
-// this proxy never rewrites, so the count is stable request to request).
+// Counts existing cache_control breakpoints in a `system`, `tools` or message
+// content array.
 function countCacheControlBreakpoints(blocks: unknown): number {
   if (!Array.isArray(blocks)) return 0;
   return blocks.filter(
     (b) => b && typeof b === "object" && "cache_control" in (b as Record<string, unknown>)
   ).length;
+}
+
+// Fingerprint of a run of messages, used to check that stored state was built
+// from this conversation. Keeps only what identifies the content (text, tool
+// ids) and ignores what clients rewrite between requests: cache_control
+// markers move every turn, and thinking blocks may be dropped or redacted.
+function prefixHash(messages: AnthropicMessage[]): string {
+  const parts = messages.map((m) => [
+    m.role,
+    ...normalizeContent(m.content).map((block) => {
+      if (!block || typeof block !== "object") return "";
+      const b = block as Record<string, unknown>;
+      if (b.type === "text") return `t:${String(b.text ?? "")}`;
+      if (b.type === "tool_use") return `u:${String(b.id ?? "")}`;
+      if (b.type === "tool_result") return `r:${String(b.tool_use_id ?? "")}`;
+      return "";
+    }).filter(Boolean),
+  ]);
+  return shortHash(JSON.stringify(parts));
 }
 
 // Folds the running summary into the first kept message (a user prompt) so the
@@ -225,16 +249,27 @@ export async function transformRequest(
     return { body, savedTokens: 0, netSavingsUsd: 0, state, compacted: false };
   }
 
-  // Defensive: if history shrank below where we'd aged to (new/forked
-  // conversation reusing the id), reset rather than fold against a bad index.
+  // Defensive: if the stored state doesn't fit this request (history shrank
+  // below where we'd aged to, or the folded prefix isn't this conversation's —
+  // a new/forked conversation reusing the key), reset rather than replace this
+  // conversation's turns with another one's summary. State saved by older
+  // versions has no prefixHash and is trusted as before.
   let working: SessionState =
     state.agedThrough > messages.length ||
-    (state.agedThrough > 0 && !isUserPrompt(messages[state.agedThrough] ?? { role: "x", content: "" }))
+    (state.agedThrough > 0 && !isUserPrompt(messages[state.agedThrough] ?? { role: "x", content: "" })) ||
+    (state.agedThrough > 0 &&
+      state.prefixHash !== undefined &&
+      prefixHash(messages.slice(0, state.agedThrough)) !== state.prefixHash)
       ? { runningSummary: "", agedThrough: 0, updatedAt: "" }
       : { ...state };
 
   let compacted = false;
-  let retrieveId = state.runningSummary ? putOriginal(state.runningSummary, state.runningSummary) : "";
+  // Reuse the id of the full transcript stored at the last fold, so the
+  // marker always points at the originals. State saved by older versions has
+  // no id; fall back to storing the summary itself.
+  let retrieveId =
+    working.retrieveId ??
+    (working.runningSummary ? putOriginal(working.runningSummary, working.runningSummary) : "");
   // ScaleDown-side dollar cost of a compaction step's own summarize call —
   // netted out of netSavingsUsd below so the reported number reflects total
   // spend, not just the Anthropic-side message-size delta. Priced in dollars
@@ -265,13 +300,20 @@ export async function transformRequest(
       // Send structured blocks alongside the flattened `input` text — the
       // backend can process tool_use/tool_result content structurally when
       // `messages` is present, but still needs `input`/instructions for the
-      // existing-summary-merge framing either way.
+      // existing-summary-merge framing either way. (The proxy currently drops
+      // the blocks and sends only `input`; see the note at the top.)
       const result = await deps.summarize(input, SUMMARY_INSTRUCTIONS, newlyAged);
       const summary = result.summary;
       if (summary && summary.trim()) {
         // Store the full aged transcript for sd_retrieve reversibility.
         retrieveId = putOriginal(serialize(messages.slice(0, boundary)), summary);
-        working = { runningSummary: summary, agedThrough: boundary, updatedAt: "" };
+        working = {
+          runningSummary: summary,
+          agedThrough: boundary,
+          retrieveId,
+          prefixHash: prefixHash(messages.slice(0, boundary)),
+          updatedAt: "",
+        };
         compacted = true;
         const scaledownTokens = Math.ceil((result.inputChars + result.outputChars) / 4);
         summarizeCallCostUsd = scaledownTokens * SCALEDOWN_PER_TOKEN;
@@ -281,14 +323,26 @@ export async function transformRequest(
     }
   }
 
+  // Clients like Claude Code also put breakpoints on message blocks, so count
+  // the ones that survive the fold, not just system/tools — otherwise the
+  // added breakpoint can push the request past Anthropic's limit of 4 (400).
+  const unmarked = applySummary(messages, working, retrieveId, false);
+  const existingBreakpoints =
+    countCacheControlBreakpoints(body.system) +
+    countCacheControlBreakpoints(body.tools) +
+    unmarked.reduce(
+      (n, m) => n + (Array.isArray(m.content) ? countCacheControlBreakpoints(m.content) : 0),
+      0
+    );
   const addCacheControl =
     !config.cacheControlDisable &&
     !!working.runningSummary &&
     estimateTokens(working.runningSummary) >= MIN_CACHEABLE_TOKENS &&
-    countCacheControlBreakpoints(body.system) + countCacheControlBreakpoints(body.tools) <
-      MAX_CACHE_BREAKPOINTS;
+    existingBreakpoints < MAX_CACHE_BREAKPOINTS;
 
-  const forwarded = applySummary(messages, working, retrieveId, addCacheControl);
+  const forwarded = addCacheControl
+    ? applySummary(messages, working, retrieveId, true)
+    : unmarked;
   // Anthropic-side tokens avoided by folding — priced as cache reads, since
   // those tokens would otherwise sit in the live window and be re-read (at
   // minimum) on every subsequent request.

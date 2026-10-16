@@ -9,6 +9,7 @@ import type { AddressInfo } from "net";
 import { pathToFileURL } from "url";
 import { ScaledownClient } from "../src/client.js";
 import { loadConfig, loadProxyConfig, type Config } from "../src/config.js";
+import { PROXY_AUTOCOMPACT_PCT, withAutocompactSettings } from "../src/proxy/launch.js";
 import { startProxy } from "../src/proxy/server.js";
 
 // Full config when an API key is present; otherwise a pure-passthrough config so
@@ -76,11 +77,11 @@ export async function runClaudeWrapper(args: string[]): Promise<void> {
     DIETCODE_PROXY: "1", // marker the status line reads to show proxy-active state
   };
   // Backstop: keep Claude's own auto-compaction out of the way so ours owns it.
-  if (!env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = "95";
+  env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = PROXY_AUTOCOMPACT_PCT;
 
   process.stderr.write(`dietcode: proxy on ${baseUrl} — launching claude...\n`);
 
-  spawnClaude(args, env, server);
+  spawnClaude(withAutocompactSettings(args), env, server);
 }
 
 function spawnClaude(args: string[], env: NodeJS.ProcessEnv, server: { close: () => void } | null): void {

@@ -1,9 +1,10 @@
 import { createServer, type IncomingMessage, type Server } from "http";
 import type { AddressInfo } from "net";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, readdirSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { resolve } from "path";
-import { startProxy } from "./server.js";
+import { clientSessionId, deriveSessionId, startProxy } from "./server.js";
+import { sessionDir } from "./store.js";
 import type { ScaledownClient } from "../client.js";
 import type { Config } from "../config.js";
 
@@ -150,6 +151,43 @@ describe("/v1/messages", () => {
     expect(forwarded.system).toEqual([{ type: "text", text: "SYS" }]);
     expect(forwarded.messages.length).toBeLessThan(7);
     expect(JSON.stringify(forwarded.messages[0].content)).toContain("PROXY SUMMARY");
+  });
+});
+
+describe("session key", () => {
+  const uuid = "08c704c9-9ca5-41a0-b745-ab74333653ac";
+
+  it("reads Claude Code's session id from the header", () => {
+    expect(clientSessionId({ "x-claude-code-session-id": uuid }, {})).toBe(uuid);
+  });
+
+  it("reads it from metadata.user_id (JSON and older underscore format)", () => {
+    const json = JSON.stringify({ device_id: "d", account_uuid: "a", session_id: uuid });
+    expect(clientSessionId({}, { metadata: { user_id: json } })).toBe(uuid);
+    expect(clientSessionId({}, { metadata: { user_id: `user_abc_account_def_session_${uuid}` } })).toBe(uuid);
+    expect(clientSessionId({}, { metadata: { user_id: "user_abc" } })).toBeUndefined();
+    expect(clientSessionId({}, {})).toBeUndefined();
+  });
+
+  it("separates sessions that open the same way, and conversations within a session", () => {
+    const body = JSON.parse(sampleBody());
+    const otherOpener = { ...body, messages: [{ role: "user", content: "different" }] };
+    expect(deriveSessionId(body, "s1")).not.toBe(deriveSessionId(body, "s2"));
+    expect(deriveSessionId(body, "s1")).not.toBe(deriveSessionId(otherOpener, "s1"));
+    expect(deriveSessionId(body, "s1")).toBe(deriveSessionId(body, "s1"));
+  });
+
+  it("keys stored state on the client session id", async () => {
+    await fetch(`http://127.0.0.1:${proxyPort}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-claude-code-session-id": uuid },
+      body: sampleBody(),
+    });
+    // sessionDir(), not `home`: the HOME override above doesn't reach
+    // os.homedir() under Jest, so remove what this test wrote.
+    const mine = readdirSync(sessionDir()).filter((f) => f.startsWith(`${uuid}_`));
+    for (const f of mine) rmSync(resolve(sessionDir(), f));
+    expect(mine.length).toBeGreaterThan(0);
   });
 });
 

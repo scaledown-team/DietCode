@@ -6,6 +6,7 @@ interface StatsFile {
   totalSaved: number;
   totalRequests: number;
   sessions: Record<string, number>;
+  sessionRequests?: Record<string, number>;
   contextWindow?: { current_tokens: number; max_tokens: number };
 }
 
@@ -39,9 +40,13 @@ export function setContextWindow(current_tokens: number, max_tokens: number): vo
   writeStats(stats);
 }
 
-export function addRequest(): void {
+export function addRequest(sessionId?: string): void {
   const stats = readStats();
   stats.totalRequests = (stats.totalRequests ?? 0) + 1;
+  if (sessionId) {
+    stats.sessionRequests ??= {};
+    stats.sessionRequests[sessionId] = (stats.sessionRequests[sessionId] ?? 0) + 1;
+  }
   writeStats(stats);
 }
 

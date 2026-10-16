@@ -9,7 +9,7 @@ Every time you submit a prompt, the plugin (via hooks in Claude Code and Codex C
 1. **Classifies your intent** so the agent picks the right tool without guessing
 2. **Compresses large contexts** automatically when you paste in a big codebase and ask a retrieval-style question — reducing token usage by 50–70% before the prompt reaches the model
 3. **Compresses large tool outputs** (`PostToolUse`) — `ls`, `grep`, `git diff/log/status` are structurally compacted with zero latency, and anything still large is run through Scaledown before it enters context
-4. **Tracks token savings** — every compression/summarization is counted, shown live in the Claude Code status line (`↓ 125.4K saved · 747 reqs`)
+4. **Tracks token savings** — every compression/summarization is counted, shown live, for the current session, in the Claude Code status line (`↓ 125.4K saved · 747 reqs`)
 
 And — the big one for **real, per-turn token savings** — an optional **proxy mode**:
 
@@ -70,7 +70,10 @@ you quit), points Claude Code at it via `ANTHROPIC_BASE_URL`, and launches
   the oldest turns into the summary. Cadence ≈ how often Claude would compact.
 - **Replaces native compaction.** Because the forwarded payload stays small, the
   usage Claude Code sees stays low, so its own auto-compaction effectively never
-  fires — Scaledown owns compaction instead.
+  fires — Scaledown owns compaction instead. As a backstop, `dietcode claude`
+  launches Claude Code with `--settings` raising `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+  to 95 for that session (a plain env var would lose to the `50` setup writes into
+  `~/.claude/settings.json`). Pass your own `--settings` and the wrapper leaves it alone.
 - **Reversible.** Compacted turns are stashed locally; a summary marker tells
   Claude to call `sd_retrieve("<id>")` if it later needs an exact detail.
 - **Cache-safe.** The summary block is byte-stable between compaction steps, so
@@ -88,9 +91,9 @@ you quit), points Claude Code at it via `ANTHROPIC_BASE_URL`, and launches
 The alias is shell-only and the wrapper launches the real binary directly, so
 there's no recursion; run the unwrapped CLI anytime with `command claude`.
 
-**Knowing whether it's on.** The Claude Code status line tells you live: in a
-proxy session it just shows your savings; in a plain `claude` session it appends
-`DietCode compaction off` as a reminder. (The agent name stays `DietCode` either
+**Knowing whether it's on.** The Claude Code status line tells you live: it shows
+the current session's context usage and savings, and in a plain `claude` session
+it appends ``compaction off: start with `dietcode claude` `` as a reminder. (The agent name stays `DietCode` either
 way — it's static config and can't change per session.)
 
 Prefer to manage it yourself? Run the proxy in the foreground and set the env var:
@@ -122,7 +125,7 @@ dietcode setup
 
 The setup wizard will:
 1. Open your browser to get an API key
-2. Ask you to paste the key (validated against the API before continuing)
+2. Ask you to paste the key (validated against the API before continuing; a key the API rejects is not saved)
 3. Save it to your shell config (`~/.zshrc`, `~/.bashrc`, etc.) and to `~/.scaledown/config.json`
 4. Register the MCP server with Claude Code (`claude mcp add --scope user`)
 5. Write the `UserPromptSubmit`, `PostToolUse`, and `PreCompact` hooks, the **status line**, and the auto-compact threshold to `~/.claude/settings.json`
@@ -338,7 +341,7 @@ Set these environment variables to tune behavior:
 | `SCALEDOWN_NIAH_DISABLE` | `false` | Set to `true` to compress all large prompts, not just retrieval-style ones |
 | `SCALEDOWN_POST_TOOL_DISABLE` | `false` | Set to `true` to disable `PostToolUse` tool-output compression |
 | `SCALEDOWN_POST_TOOL_THRESHOLD` | `4000` | Token threshold above which tool output is sent to the API (after structural filtering) |
-| `SCALEDOWN_COMPACT_THRESHOLD` | `50` | Context-usage % that triggers compaction (also sets `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`) |
+| `SCALEDOWN_COMPACT_THRESHOLD` | `50` | Context-usage % that triggers compaction (also sets `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`; `dietcode claude` raises it to 95 so the proxy compacts first) |
 | `SCALEDOWN_SHOW_PROGRESS` | `true` | Set to `false` to hide the per-prompt context progress bar |
 | `SCALEDOWN_MAX_CONTEXT_TOKENS` | `200000` | Context-window size used for the progress bar / compaction math |
 | `SCALEDOWN_PROXY_COMPACT_THRESHOLD` | `50000` | Tokens (summary + recent turns) that trigger a proxy compaction step. Keep below the native auto-compact trigger so the proxy compacts first |
@@ -346,6 +349,7 @@ Set these environment variables to tune behavior:
 | `SCALEDOWN_PROXY_PORT` | `8788` | Port for the foreground `dietcode proxy` (the `dietcode claude` wrapper uses an ephemeral port) |
 | `SCALEDOWN_PROXY_UPSTREAM` | `https://api.anthropic.com` | Upstream the proxy forwards to |
 | `SCALEDOWN_PROXY_DISABLE` | `false` | Set to `true` to make the proxy a pure passthrough (no compaction) |
+| `SCALEDOWN_PROXY_CACHE_CONTROL_DISABLE` | `false` | Set to `true` to stop the proxy marking the folded summary as a `cache_control` breakpoint (it already skips the marker when the request has Anthropic's maximum of 4) |
 
 ```bash
 export SCALEDOWN_COMPRESS_THRESHOLD=5000

@@ -33,17 +33,41 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
   });
 }
 
+// Claude Code's own session id. It is sent as the x-claude-code-session-id
+// header, and inside metadata.user_id: a JSON string with a session_id field
+// in current versions, "user_<..>_account_<..>_session_<uuid>" in older ones.
+export function clientSessionId(
+  headers: IncomingMessage["headers"],
+  body: MessagesBody
+): string | undefined {
+  const header = headers["x-claude-code-session-id"];
+  if (typeof header === "string" && header) return header;
+  const userId = (body.metadata as { user_id?: unknown } | undefined)?.user_id;
+  if (typeof userId !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(userId) as { session_id?: unknown };
+    if (typeof parsed.session_id === "string" && parsed.session_id) return parsed.session_id;
+  } catch {
+    // Not JSON — try the older underscore format.
+  }
+  return /_session_([0-9a-f-]{8,})$/i.exec(userId)?.[1];
+}
+
 // A conversation key stable across a session's many requests but distinct per
-// conversation — derived from the system prompt + first user message, since the
-// Anthropic request carries no session id.
-function deriveSessionId(body: MessagesBody): string {
+// conversation. The system prompt + first message hash separates the
+// conversations inside one Claude Code session (main thread, subagents, side
+// requests); the client's session id, when present, keeps two sessions that
+// open the same way apart. Without one, transformRequest's prefix check is
+// what stops them sharing state.
+export function deriveSessionId(body: MessagesBody, clientId?: string): string {
   const sys = JSON.stringify(body.system ?? "").slice(0, 4000);
   const first = body.messages?.[0];
   const firstText =
     first && typeof first.content === "string"
       ? first.content
       : JSON.stringify(first?.content ?? "");
-  return shortHash(sys + "::" + firstText.slice(0, 4000));
+  const hash = shortHash(sys + "::" + firstText.slice(0, 4000));
+  return clientId ? `${clientId}_${hash}` : hash;
 }
 
 function outboundHeaders(req: IncomingMessage): Record<string, string> {
@@ -82,8 +106,12 @@ async function pipeUpstream(
 
 export function createProxyServer(config: Config, client: ScaledownClient): Server {
   const { proxy } = config;
-  const summarize = (text: string, instructions?: string, messages?: unknown[]) =>
-    client.summarize(text, instructions, undefined, messages).then((r) => ({
+  // The structured `messages` are deliberately NOT forwarded: when the
+  // summarize endpoint receives them it skips the model and returns the
+  // transcript verbatim with only tool results stripped (~0% savings on
+  // prompt-heavy turns). The flattened `text` alone gets a real summary.
+  const summarize = (text: string, instructions?: string) =>
+    client.summarize(text, instructions).then((r) => ({
       summary: r.summary,
       inputChars: r.input_chars,
       outputChars: r.output_chars,
@@ -100,7 +128,8 @@ export function createProxyServer(config: Config, client: ScaledownClient): Serv
     if (!proxy.disable && method === "POST" && isMessagesPath(url.pathname) && raw.length > 0) {
       try {
         const body = JSON.parse(raw.toString("utf8")) as MessagesBody;
-        const sessionId = deriveSessionId(body);
+        const clientId = clientSessionId(req.headers, body);
+        const sessionId = deriveSessionId(body, clientId);
         const state = loadSessionState(sessionId);
         const result = await transformRequest(body, state, proxy, { summarize });
 
@@ -111,8 +140,10 @@ export function createProxyServer(config: Config, client: ScaledownClient): Serv
               `saved ~${result.savedTokens} tokens (~$${result.netSavingsUsd.toFixed(4)})\n`
           );
         }
-        if (result.savedTokens > 0) addSaving(sessionId, result.savedTokens);
-        addRequest();
+        // Attribute savings and requests to Claude Code's session id when known, the same
+        // key the hooks use, so per-session stats line up.
+        if (result.savedTokens > 0) addSaving(clientId ?? sessionId, result.savedTokens);
+        addRequest(clientId ?? sessionId);
         outBody = JSON.stringify(result.body);
       } catch (err) {
         // Fail-open: forward the original request unchanged.
