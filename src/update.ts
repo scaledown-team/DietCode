@@ -3,6 +3,7 @@ import { homedir } from "os";
 import { dirname, resolve } from "path";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
+import { loadMaintenanceConfig } from "./config.js";
 import { reconcileAll } from "./reconcile.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -91,6 +92,7 @@ function writeCache(cache: UpdateCache): void {
 // install path changed (Node version bump) without a reinstall. Cheap and
 // fail-soft — called from the status line, which already runs ~daily logic.
 export function reconcileIfStale(): void {
+  if (!loadMaintenanceConfig().autoReconcile) return;
   try {
     const cache = readCache();
     if (cache?.lastReconciled) {
@@ -115,7 +117,8 @@ function needsCheck(cache: UpdateCache | null): boolean {
   return elapsed > 24 * 60 * 60 * 1000;
 }
 
-export function triggerBackgroundUpdate(): void {
+export function triggerBackgroundUpdate(): boolean {
+  if (!loadMaintenanceConfig().autoUpdate) return false;
   try {
     const child = spawn("npm", ["install", "-g", "dietcode@latest"], {
       detached: true,
@@ -129,12 +132,14 @@ export function triggerBackgroundUpdate(): void {
       latestVersion: cache?.latestVersion ?? CURRENT_VERSION,
       updateTriggered: true,
     });
+    return true;
   } catch {
-    // non-fatal
+    return false;
   }
 }
 
 export async function checkForUpdate(): Promise<UpdateResult | null> {
+  if (!loadMaintenanceConfig().updateCheck) return null;
   try {
     const cache = readCache();
 

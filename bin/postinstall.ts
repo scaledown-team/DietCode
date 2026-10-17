@@ -6,9 +6,14 @@
 // Must never fail the install: a thrown error here would abort `npm install`.
 // On a fresh install (no harness configured yet) this is a silent no-op —
 // `dietcode setup` does first-time configuration.
+import { loadMaintenanceConfig } from "../src/config.js";
 import { reconcileAll } from "../src/reconcile.js";
 
+// The same entry point backs the explicit dietcode-reconcile command.
+const automatic = process.env.npm_lifecycle_event === "postinstall";
+
 try {
+  if (automatic && !loadMaintenanceConfig().autoReconcile) process.exit(0);
   const result = reconcileAll();
   const touched = Object.entries(result)
     .filter(([, v]) => v)

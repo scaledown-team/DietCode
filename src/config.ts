@@ -124,3 +124,12 @@ export function loadConfig(): Config {
     proxy: loadProxyConfig(),
   };
 }
+
+// Maintenance must also work without an API key (e.g. postinstall/status).
+export function loadMaintenanceConfig() {
+  return {
+    updateCheck: process.env.SCALEDOWN_UPDATE_CHECK !== "false",
+    autoUpdate: process.env.SCALEDOWN_AUTO_UPDATE === "true",
+    autoReconcile: process.env.SCALEDOWN_AUTO_RECONCILE !== "false",
+  };
+}

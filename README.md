@@ -332,6 +332,9 @@ Set these environment variables to tune behavior:
 
 | Variable | Default | Description |
 |---|---|---|
+| `SCALEDOWN_UPDATE_CHECK` | `true` | Set to `false` to disable npm registry checks and update notifications |
+| `SCALEDOWN_AUTO_UPDATE` | `false` | Set to `true` to allow background installation of minor/patch updates from the status line |
+| `SCALEDOWN_AUTO_RECONCILE` | `true` | Set to `false` to disable automatic harness config refresh from postinstall and the status line; explicit `dietcode-reconcile` still works |
 | `SCALEDOWN_API_KEY` | — | **Required.** Your Scaledown API key |
 | `SCALEDOWN_COMPRESS_THRESHOLD` | `10000` | Token estimate above which prompt auto-compression fires |
 | `SCALEDOWN_COMPRESS_RATE` | `0.3` | How aggressively to compress (`0.3` = keep ~30% of tokens; `auto` lets the API decide) |
@@ -362,7 +365,7 @@ npm update -g dietcode
 npm install -g dietcode@latest
 ```
 
-Your harness config (hooks, status line, Cursor/Codex blocks) is **automatically re-synced on update** for every harness you've already set up — you do not need to re-run setup. This happens two ways:
+Unless `SCALEDOWN_AUTO_RECONCILE=false`, your harness config (hooks, status line, Cursor/Codex blocks) is **automatically re-synced on update** for every harness you've already set up — you do not need to re-run setup. This happens two ways:
 
 - A **postinstall** step runs right after `npm install`.
 - A **once-a-day self-heal** runs from the Claude Code status line as a safety net (e.g. if `npm install --ignore-scripts` skipped postinstall, or your Node version changed and moved the global install path).
@@ -373,7 +376,25 @@ Reconcile only touches harnesses you've already configured — it never adds a h
 dietcode-reconcile
 ```
 
-> The status line also shows when a new version is available and auto-updates minor versions in the background; major versions print the upgrade command.
+The status line checks for updates and shows an upgrade command by default;
+it does **not** install packages unless you opt in with
+`SCALEDOWN_AUTO_UPDATE=true`. Opting in allows minor/patch updates in the
+background; major updates always show the manual command.
+
+For a pinned or externally managed installation, export these before installing
+and launching your coding client (restart existing sessions to inherit them):
+
+```bash
+export SCALEDOWN_AUTO_UPDATE=false
+export SCALEDOWN_AUTO_RECONCILE=false
+# Optional: also disable registry checks and update notifications.
+export SCALEDOWN_UPDATE_CHECK=false
+```
+
+These controls are independent. Update checks can stay enabled for notifications
+without installing anything. Explicit `npm install -g dietcode@latest`,
+`dietcode setup`, and `dietcode-reconcile` remain available when automatic
+maintenance is disabled.
 
 ---
 

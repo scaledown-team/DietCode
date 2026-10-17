@@ -40,6 +40,9 @@ jobs:
           path: dist/
           retention-days: 1
 
+      - name: Test maintenance controls
+        run: npx jest src/maintenance.test.ts --runInBand
+
   mcp-integration:
     name: MCP Protocol & Contract Tests
     runs-on: ubuntu-latest

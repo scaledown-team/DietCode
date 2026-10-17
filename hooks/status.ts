@@ -89,8 +89,11 @@ async function main(): Promise<void> {
     const update = await checkForUpdate();
     if (update && update.kind === "minor") {
       if (!update.alreadyTriggered) {
-        triggerBackgroundUpdate();
-        parts.push(`updating to v${update.latest}...`);
+        if (triggerBackgroundUpdate()) {
+          parts.push(`updating to v${update.latest}...`);
+        } else {
+          parts.push(`v${update.latest} available: npm i -g dietcode@latest`);
+        }
       } else {
         parts.push(`restart to activate v${update.latest}`);
       }
