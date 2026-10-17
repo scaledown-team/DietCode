@@ -3,7 +3,6 @@ import type { AddressInfo } from "net";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { resolve } from "path";
-import { startProxy } from "./server.js";
 import type { ScaledownClient } from "../client.js";
 import type { Config } from "../config.js";
 
@@ -71,6 +70,8 @@ beforeAll(async () => {
   prevHome = process.env.HOME;
   home = mkdtempSync(resolve(tmpdir(), "dietcode-server-"));
   process.env.HOME = home;
+  // stats.ts resolves its path at import time, so import after sandboxing HOME.
+  const { startProxy } = await import("./server.js");
 
   upstream = createServer(async (req, res) => {
     lastReq = {

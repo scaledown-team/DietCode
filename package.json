@@ -23,12 +23,12 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "postinstall": "node ./dist/bin/postinstall.js || true",
-    "test": "jest --testPathIgnorePatterns='/node_modules/' --testPathIgnorePatterns='real-api'",
-    "test:unit": "jest --testPathPattern='(client|niah|post-tool-use|user-prompt-submit)\\.test'",
-    "test:integration": "jest --testPathPattern='(integration|mcp-contract)\\.test'",
-    "test:config": "jest --testPathPattern='config-formats\\.test'",
-    "test:hooks": "jest --testPathPattern='hook-integration\\.test' --testTimeout=120000",
-    "test:real": "jest --testPathPattern='real-api\\.test'",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathIgnorePatterns='/node_modules/' --testPathIgnorePatterns='real-api'",
+    "test:unit": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathIgnorePatterns='node_modules|real-api|integration|mcp-contract|config-formats'",
+    "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathPattern='(integration|mcp-contract)\\.test'",
+    "test:config": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathPattern='config-formats\\.test'",
+    "test:hooks": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathPattern='hook-integration\\.test' --testTimeout=120000",
+    "test:real": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathPattern='real-api\\.test'",
     "start": "node dist/src/index.js"
   },
   "dependencies": {

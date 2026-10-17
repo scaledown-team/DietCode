@@ -428,7 +428,8 @@ you're asking it to write from scratch) are left alone.
 git clone https://github.com/scaledown-team/DietCode
 cd DietCode
 npm install
-npm test          # unit tests
+npm test          # all tests except live Scaledown API tests
+npm run test:unit # offline unit and proxy tests (also run in CI)
 npm run build     # compile TypeScript
 ```
 

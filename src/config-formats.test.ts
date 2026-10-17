@@ -8,11 +8,13 @@
  * These tests run without any API keys or HTTP calls.
  */
 
+import { execFileSync } from "child_process";
 import { existsSync } from "fs";
-import { resolve } from "path";
+import { dirname, resolve } from "path";
+import { fileURLToPath } from "url";
 import { readFile } from "fs/promises";
 
-const REPO_ROOT = resolve(__dirname, "..");
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // ---- Claude Code settings.json ----
 
@@ -172,10 +174,7 @@ describe("dist artifacts (post-build)", () => {
   it("no source .ts files shipped in dist (.d.ts declarations are fine)", () => {
     // Verify we don't accidentally ship source files. `.d.ts` declaration
     // files are legitimate tsc output, so only flag non-declaration .ts files.
-    const { execSync } = require("child_process");
-    const tsFiles = execSync(
-      `find ${DIST} -name "*.ts" -not -name "*.d.ts" 2>/dev/null || true`
-    )
+    const tsFiles = execFileSync("find", [DIST, "-name", "*.ts", "-not", "-name", "*.d.ts"])
       .toString()
       .trim();
     expect(tsFiles).toBe("");

@@ -1,22 +1,15 @@
+import { jest } from "@jest/globals";
 import { ScaledownClient, ScaledownError } from "./client.js";
 
-const mockFetch = jest.fn();
+const mockFetch = jest.fn<typeof fetch>();
 global.fetch = mockFetch;
 
 function mockOk(body: unknown) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    json: () => Promise.resolve(body),
-  });
+  mockFetch.mockResolvedValueOnce(new Response(JSON.stringify(body)));
 }
 
 function mockError(status: number, text = "") {
-  mockFetch.mockResolvedValueOnce({
-    ok: false,
-    status,
-    statusText: String(status),
-    text: () => Promise.resolve(text),
-  });
+  mockFetch.mockResolvedValueOnce(new Response(text, { status, statusText: String(status) }));
 }
 
 const client = new ScaledownClient("test-key");

@@ -1,7 +1,8 @@
+import { jest } from "@jest/globals";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { resolve } from "path";
-import { transformRequest, type MessagesBody } from "./transform.js";
+import { transformRequest, type MessagesBody, type TransformDeps } from "./transform.js";
 import type { SessionState } from "./store.js";
 import type { ProxyConfig } from "../config.js";
 
@@ -61,7 +62,7 @@ function body(): MessagesBody {
 
 describe("under the compaction threshold", () => {
   it("makes zero ScaleDown calls and leaves messages untouched when no summary exists", async () => {
-    const summarize = jest.fn();
+    const summarize = jest.fn<TransformDeps["summarize"]>();
     const res = await transformRequest(body(), { ...EMPTY }, { ...baseConfig, compactThreshold: 1e9 }, {
       summarize,
     });
@@ -72,7 +73,7 @@ describe("under the compaction threshold", () => {
   });
 
   it("reuses an existing running summary byte-for-byte (no ScaleDown call)", async () => {
-    const summarize = jest.fn();
+    const summarize = jest.fn<TransformDeps["summarize"]>();
     const state: SessionState = { runningSummary: "EARLIER SUMMARY", agedThrough: 4, updatedAt: "" };
     const cfg = { ...baseConfig, compactThreshold: 1e9 };
 
@@ -95,7 +96,7 @@ describe("under the compaction threshold", () => {
 
 describe("at a compaction step (over threshold)", () => {
   it("calls summarize exactly once, folds the summary in, and advances state", async () => {
-    const summarize = jest.fn().mockResolvedValue(summarizeResult("FRESH SUMMARY"));
+    const summarize = jest.fn<TransformDeps["summarize"]>().mockResolvedValue(summarizeResult("FRESH SUMMARY"));
     const res = await transformRequest(body(), { ...EMPTY }, { ...baseConfig, compactThreshold: 1 }, {
       summarize,
     });
@@ -111,7 +112,7 @@ describe("at a compaction step (over threshold)", () => {
   });
 
   it("asks ScaleDown to dedupe repeated tool output rather than describe it", async () => {
-    const summarize = jest.fn().mockResolvedValue(summarizeResult("FRESH SUMMARY"));
+    const summarize = jest.fn<TransformDeps["summarize"]>().mockResolvedValue(summarizeResult("FRESH SUMMARY"));
     await transformRequest(body(), { ...EMPTY }, { ...baseConfig, compactThreshold: 1 }, { summarize });
 
     const instructions = summarize.mock.calls[0][1] as string;
@@ -119,7 +120,7 @@ describe("at a compaction step (over threshold)", () => {
   });
 
   it("reports positive savings when the aged content is large", async () => {
-    const summarize = jest.fn().mockResolvedValue(summarizeResult("TINY SUMMARY"));
+    const summarize = jest.fn<TransformDeps["summarize"]>().mockResolvedValue(summarizeResult("TINY SUMMARY"));
     const big = "lorem ipsum ".repeat(500); // ~6k chars per message
     const heavy: MessagesBody = {
       messages: [
@@ -140,7 +141,7 @@ describe("at a compaction step (over threshold)", () => {
   });
 
   it("extends the prior summary rather than starting over", async () => {
-    const summarize = jest.fn().mockResolvedValue(summarizeResult("MERGED"));
+    const summarize = jest.fn<TransformDeps["summarize"]>().mockResolvedValue(summarizeResult("MERGED"));
     const state: SessionState = { runningSummary: "PRIOR", agedThrough: 2, updatedAt: "" };
     await transformRequest(body(), state, { ...baseConfig, compactThreshold: 1 }, { summarize });
     const input = summarize.mock.calls[0][0] as string;
@@ -148,7 +149,7 @@ describe("at a compaction step (over threshold)", () => {
   });
 
   it("never touches system or tools", async () => {
-    const summarize = jest.fn().mockResolvedValue(summarizeResult("S"));
+    const summarize = jest.fn<TransformDeps["summarize"]>().mockResolvedValue(summarizeResult("S"));
     const b = body();
     const res = await transformRequest(b, { ...EMPTY }, { ...baseConfig, compactThreshold: 1 }, {
       summarize,
@@ -160,7 +161,7 @@ describe("at a compaction step (over threshold)", () => {
 
 describe("fail-open", () => {
   it("forwards the original messages when summarize throws", async () => {
-    const summarize = jest.fn().mockRejectedValue(new Error("scaledown down"));
+    const summarize = jest.fn<TransformDeps["summarize"]>().mockRejectedValue(new Error("scaledown down"));
     const res = await transformRequest(body(), { ...EMPTY }, { ...baseConfig, compactThreshold: 1 }, {
       summarize,
     });
@@ -171,7 +172,7 @@ describe("fail-open", () => {
 
 describe("too few turns to compact", () => {
   it("does nothing when there aren't more than recentTurns user prompts", async () => {
-    const summarize = jest.fn();
+    const summarize = jest.fn<TransformDeps["summarize"]>();
     const small: MessagesBody = {
       messages: [
         { role: "user", content: "only one" },
@@ -190,7 +191,7 @@ describe("turn-cadence trigger", () => {
   // recentTurns=2, so sampleMessages() (4 user prompts) only has 2 foldable
   // turns — below foldEveryTurns=3 — even with a token threshold of ~0.
   it("does not fold before foldEveryTurns new turns have accumulated", async () => {
-    const summarize = jest.fn();
+    const summarize = jest.fn<TransformDeps["summarize"]>();
     const res = await transformRequest(
       body(),
       { ...EMPTY },
@@ -202,7 +203,7 @@ describe("turn-cadence trigger", () => {
   });
 
   it("folds once foldEveryTurns new turns have accumulated, even under the token threshold", async () => {
-    const summarize = jest.fn().mockResolvedValue(summarizeResult("CADENCE SUMMARY"));
+    const summarize = jest.fn<TransformDeps["summarize"]>().mockResolvedValue(summarizeResult("CADENCE SUMMARY"));
     // 5 user prompts (idx 0,2,4,6,8); recentTurns=2 leaves 3 foldable turns.
     const many: MessagesBody = {
       messages: [
@@ -234,7 +235,7 @@ describe("cache_control breakpoint on the folded summary", () => {
   it("adds an ephemeral cache_control breakpoint when the summary is large enough", async () => {
     const state: SessionState = { runningSummary: bigSummary, agedThrough: 4, updatedAt: "" };
     const res = await transformRequest(body(), state, { ...baseConfig, compactThreshold: 1e9 }, {
-      summarize: jest.fn(),
+      summarize: jest.fn<TransformDeps["summarize"]>(),
     });
     const block = (res.body.messages![0].content as Array<Record<string, unknown>>)[0];
     expect(block.cache_control).toEqual({ type: "ephemeral" });
@@ -243,7 +244,7 @@ describe("cache_control breakpoint on the folded summary", () => {
   it("skips it when the summary is too small to be cacheable", async () => {
     const state: SessionState = { runningSummary: "short summary", agedThrough: 4, updatedAt: "" };
     const res = await transformRequest(body(), state, { ...baseConfig, compactThreshold: 1e9 }, {
-      summarize: jest.fn(),
+      summarize: jest.fn<TransformDeps["summarize"]>(),
     });
     const block = (res.body.messages![0].content as Array<Record<string, unknown>>)[0];
     expect(block.cache_control).toBeUndefined();
@@ -259,7 +260,7 @@ describe("cache_control breakpoint on the folded summary", () => {
       { name: "C", cache_control: { type: "ephemeral" } },
     ];
     const res = await transformRequest(b, state, { ...baseConfig, compactThreshold: 1e9 }, {
-      summarize: jest.fn(),
+      summarize: jest.fn<TransformDeps["summarize"]>(),
     });
     const block = (res.body.messages![0].content as Array<Record<string, unknown>>)[0];
     expect(block.cache_control).toBeUndefined();
@@ -271,7 +272,7 @@ describe("cache_control breakpoint on the folded summary", () => {
       body(),
       state,
       { ...baseConfig, compactThreshold: 1e9, cacheControlDisable: true },
-      { summarize: jest.fn() }
+      { summarize: jest.fn<TransformDeps["summarize"]>() }
     );
     const block = (res.body.messages![0].content as Array<Record<string, unknown>>)[0];
     expect(block.cache_control).toBeUndefined();

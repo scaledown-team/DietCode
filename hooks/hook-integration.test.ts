@@ -19,13 +19,14 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
 import * as http from "http";
-import { resolve } from "path";
+import { dirname, resolve } from "path";
+import { fileURLToPath } from "url";
 import { AddressInfo } from "net";
 
 const execFileAsync = promisify(execFile);
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const REPO_ROOT = resolve(__dirname, "..");
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // Skip all tests if ANTHROPIC_API_KEY is not set
 const describeIfCI = ANTHROPIC_API_KEY ? describe : describe.skip;
