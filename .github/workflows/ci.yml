@@ -33,6 +33,9 @@ jobs:
       - name: Run unit tests
         run: npm run test:unit
 
+      - name: Test status command
+        run: npx jest hooks/status.test.ts --runInBand
+
       - name: Upload dist artifact
         uses: actions/upload-artifact@v4
         if: matrix.node == 20

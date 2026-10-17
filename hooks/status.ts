@@ -72,11 +72,15 @@ async function main(): Promise<void> {
 
   const parts: string[] = [];
 
-  if (ctx && ctx.max_tokens > 0) {
+  if (ctx && Number.isFinite(ctx.current_tokens) && ctx.current_tokens >= 0 &&
+      Number.isFinite(ctx.max_tokens) && ctx.max_tokens > 0) {
     const pct = Math.round((ctx.current_tokens / ctx.max_tokens) * 100);
-    const filled = Math.round((pct / 100) * 10);
-    const bar = "█".repeat(filled) + "░".repeat(10 - filled);
-    parts.push(`[${bar}] ${pct}% ctx`);
+    if (Number.isFinite(pct)) {
+      // Keep the actual percentage visible, but cap the ten-cell bar.
+      const filled = Math.min(10, Math.round((pct / 100) * 10));
+      const bar = "█".repeat(filled) + "░".repeat(10 - filled);
+      parts.push(`[${bar}] ${pct}% ctx`);
+    }
   }
 
   parts.push(`↓ ${formatTokenCount(totalSaved)} saved`);
