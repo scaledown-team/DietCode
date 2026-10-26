@@ -447,4 +447,4 @@ SCALEDOWN_API_KEY=test echo '{}' | node dist/src/index.js
 
 ## License
 
-MIT
+[MIT](LICENSE)

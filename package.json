@@ -3,6 +3,7 @@
   "version": "0.5.0",
   "description": "DietCode — context optimization for Claude Code, Cursor, and Codex CLI, powered by Scaledown",
   "type": "module",
+  "license": "MIT",
   "engines": {
     "node": ">=18"
   },
