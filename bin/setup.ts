@@ -7,7 +7,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { ScaledownClient } from "../src/client.js";
 import { CONFIG_FILE } from "../src/config.js";
-import { CURSOR_RULES_CONTENT } from "../src/reconcile.js";
+import { CURSOR_RULES_CONTENT, applyClaudeHooks } from "../src/reconcile.js";
 
 // TOML helpers (no external dep — we only need simple array-of-table writes)
 function tomlStringValue(s: string): string {
@@ -89,8 +89,9 @@ function setClaudeAlias(enable: boolean): void {
 
 function storeApiKey(apiKey: string): void {
   const rcFile = detectRcFile();
-  const compactThreshold = process.env.SCALEDOWN_COMPACT_THRESHOLD ?? "50";
-  const exportLine = `\nexport SCALEDOWN_API_KEY="${apiKey}"\nexport CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${compactThreshold}\n`;
+  // Claude Code's auto-compact trigger is only changed when the user asks for
+  // it via SCALEDOWN_COMPACT_THRESHOLD; otherwise Claude Code's default stands.
+  const compactThreshold = process.env.SCALEDOWN_COMPACT_THRESHOLD;
 
   const existing = existsSync(rcFile) ? readFileSync(rcFile, "utf8") : "";
 
@@ -100,10 +101,12 @@ function storeApiKey(apiKey: string): void {
   } else {
     updated += `\nexport SCALEDOWN_API_KEY="${apiKey}"\n`;
   }
-  if (existing.includes("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")) {
-    updated = updated.replace(/\nexport CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=\S+\n/, `\nexport CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${compactThreshold}\n`);
-  } else {
-    updated += `\nexport CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${compactThreshold}\n`;
+  if (compactThreshold) {
+    if (existing.includes("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")) {
+      updated = updated.replace(/\nexport CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=\S+\n/, `\nexport CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${compactThreshold}\n`);
+    } else {
+      updated += `\nexport CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${compactThreshold}\n`;
+    }
   }
   writeFileSync(rcFile, updated, "utf8");
 
@@ -185,33 +188,28 @@ function writeHooks(): void {
     }
   }
 
-  const hooks = (settings.hooks as Record<string, unknown[]>) ?? {};
-  hooks.UserPromptSubmit = [
-    { matcher: "", hooks: [{ type: "command", command: promptHookCommand }] },
-  ];
-  hooks.PostToolUse = [
-    { matcher: "", hooks: [{ type: "command", command: postToolHookCommand }] },
-  ];
-  hooks.PreCompact = [
-    { matcher: "", hooks: [{ type: "command", command: preCompactHookCommand }] },
-  ];
-  settings.hooks = hooks;
-
-  // Status line: shows token savings below the Claude Code text input bar
-  settings.statusLine = {
-    type: "command",
-    command: statusCommand,
-    refreshInterval: 5000,
-  };
+  // Merges with the user's own hooks on the same events. The savings status
+  // line is installed unless the user already has a statusLine of their own.
+  const ownStatusLine = !applyClaudeHooks(
+    settings,
+    {
+      UserPromptSubmit: promptHookCommand,
+      PostToolUse: postToolHookCommand,
+      PreCompact: preCompactHookCommand,
+    },
+    statusCommand
+  );
 
   // Set the active agent so Claude Code shows "DietCode" as the agent name.
   settings.agent = "DietCode";
 
-  // Set Claude Code's auto-compact threshold to match SCALEDOWN_COMPACT_THRESHOLD
-  const compactThreshold = process.env.SCALEDOWN_COMPACT_THRESHOLD ?? "50";
-  const env = (settings.env as Record<string, string>) ?? {};
-  env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = compactThreshold;
-  settings.env = env;
+  // Only override Claude Code's auto-compact threshold when the user opted in.
+  const compactThreshold = process.env.SCALEDOWN_COMPACT_THRESHOLD;
+  if (compactThreshold) {
+    const env = (settings.env as Record<string, string>) ?? {};
+    env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = compactThreshold;
+    settings.env = env;
+  }
 
   const settingsDir = resolve(homedir(), ".claude");
   if (!existsSync(settingsDir)) {
@@ -219,6 +217,12 @@ function writeHooks(): void {
   }
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf8");
   console.log(`  ✓ Hooks written to ${settingsPath}`);
+  if (ownStatusLine) {
+    console.log("  Kept your existing statusLine (DietCode's savings status line was not installed).");
+  }
+  if (compactThreshold) {
+    console.log(`  ✓ Claude Code auto-compact threshold set to ${compactThreshold}% (SCALEDOWN_COMPACT_THRESHOLD)`);
+  }
 }
 
 function registerCodexHooks(): void {
@@ -398,7 +402,7 @@ Proxy features (when you run \`dietcode claude\`):
   • Replaces Claude's native auto-compaction; reversible via the sd_retrieve tool
 
 Environment variables:
-  SCALEDOWN_COMPACT_THRESHOLD=N      — context % that triggers compaction (default: 50)
+  SCALEDOWN_COMPACT_THRESHOLD=N      — opt in to setting Claude's auto-compact % (default: unchanged)
   SCALEDOWN_SHOW_PROGRESS=false      — disable the per-turn context progress bar
   SCALEDOWN_POST_TOOL_DISABLE=true   — disable post-tool compression
   SCALEDOWN_POST_TOOL_THRESHOLD=N    — token threshold for tool output compression (default: 4000)

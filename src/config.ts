@@ -53,8 +53,9 @@ export function loadProxyConfig(): ProxyConfig {
     recentTurns: intEnv("SCALEDOWN_PROXY_RECENT_TURNS", 4),
     blockThreshold: intEnv("SCALEDOWN_PROXY_BLOCK_THRESHOLD", 2000),
     // Must stay below Claude's native auto-compact trigger so OUR compaction
-    // fires first. The plugin sets CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 (~100k of
-    // a 200k window), so default well under that at 50k.
+    // fires first. That trigger is Claude Code's default unless the user opts in
+    // to CLAUDE_AUTOCOMPACT_PCT_OVERRIDE via SCALEDOWN_COMPACT_THRESHOLD; 50k is
+    // well under it either way for a 200k window.
     compactThreshold: intEnv("SCALEDOWN_PROXY_COMPACT_THRESHOLD", 50000),
     disable: process.env.SCALEDOWN_PROXY_DISABLE === "true",
     blockCompress: process.env.SCALEDOWN_PROXY_BLOCK_COMPRESS === "true",
@@ -102,9 +103,11 @@ export function loadConfig(): Config {
     : 4000;
 
   const compactThresholdRaw = process.env.SCALEDOWN_COMPACT_THRESHOLD;
+  // Only drives the "compaction imminent" hint. Without an explicit threshold
+  // Claude Code's own (near-full-window) auto-compact default applies.
   const compactThreshold = compactThresholdRaw
     ? parseInt(compactThresholdRaw, 10)
-    : 50;
+    : 95;
 
   const showProgress = process.env.SCALEDOWN_SHOW_PROGRESS !== "false";
 

@@ -125,7 +125,7 @@ The setup wizard will:
 2. Ask you to paste the key (validated against the API before continuing)
 3. Save it to your shell config (`~/.zshrc`, `~/.bashrc`, etc.) and to `~/.scaledown/config.json`
 4. Register the MCP server with Claude Code (`claude mcp add --scope user`)
-5. Write the `UserPromptSubmit`, `PostToolUse`, and `PreCompact` hooks, the **status line**, and the auto-compact threshold to `~/.claude/settings.json`
+5. Add the `UserPromptSubmit`, `PostToolUse`, and `PreCompact` hooks and the **status line** to `~/.claude/settings.json`, alongside any hooks you already have (an existing `statusLine` of yours is kept). Claude Code's auto-compact threshold is left at its default unless you set `SCALEDOWN_COMPACT_THRESHOLD`
 6. Offer (recommended) to alias `claude` → `dietcode claude` so [proxy mode](#proxy-mode-real-token-savings) is on by default
 7. Optionally configure Codex CLI and/or Cursor if you answer **y** when prompted
 
@@ -338,7 +338,7 @@ Set these environment variables to tune behavior:
 | `SCALEDOWN_NIAH_DISABLE` | `false` | Set to `true` to compress all large prompts, not just retrieval-style ones |
 | `SCALEDOWN_POST_TOOL_DISABLE` | `false` | Set to `true` to disable `PostToolUse` tool-output compression |
 | `SCALEDOWN_POST_TOOL_THRESHOLD` | `4000` | Token threshold above which tool output is sent to the API (after structural filtering) |
-| `SCALEDOWN_COMPACT_THRESHOLD` | `50` | Context-usage % that triggers compaction (also sets `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`) |
+| `SCALEDOWN_COMPACT_THRESHOLD` | unset | Opt-in. When set during `dietcode setup`, writes `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` so Claude Code auto-compacts at this context-usage %. Unset leaves Claude Code's default alone |
 | `SCALEDOWN_SHOW_PROGRESS` | `true` | Set to `false` to hide the per-prompt context progress bar |
 | `SCALEDOWN_MAX_CONTEXT_TOKENS` | `200000` | Context-window size used for the progress bar / compaction math |
 | `SCALEDOWN_PROXY_COMPACT_THRESHOLD` | `50000` | Tokens (summary + recent turns) that trigger a proxy compaction step. Keep below the native auto-compact trigger so the proxy compacts first |
@@ -394,11 +394,11 @@ npm uninstall -g dietcode
 rm -rf ~/.scaledown          # API key + saved-token stats (optional)
 ```
 
-Finally, delete the two lines the installer added to your shell config (`~/.zshrc` / `~/.bashrc`):
+Finally, delete the lines the installer added to your shell config (`~/.zshrc` / `~/.bashrc`):
 
 ```bash
 export SCALEDOWN_API_KEY="..."
-export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50
+export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50   # only present if you installed v0.5.0 or earlier, or set SCALEDOWN_COMPACT_THRESHOLD
 ```
 
 **Per-harness manual removal** (if you prefer to do it by hand, or set up MCP manually):

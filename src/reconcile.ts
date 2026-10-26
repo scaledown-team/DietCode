@@ -43,6 +43,77 @@ export interface ReconcileResult {
 // Claude Code — ~/.claude/settings.json
 // ---------------------------------------------------------------------------
 
+export type ClaudeHookEvent = "UserPromptSubmit" | "PostToolUse" | "PreCompact";
+
+const CLAUDE_HOOK_EVENTS: ClaudeHookEvent[] = ["UserPromptSubmit", "PostToolUse", "PreCompact"];
+
+// True for a hook/statusLine command that runs one of DietCode's own scripts
+// (current or pre-rename Scaledown install, or a dev checkout). It looks at a
+// single command, not a whole matcher group, so a user hook sharing a group
+// with ours is never mistaken for ours.
+export function isOurHookCommand(command: unknown): boolean {
+  if (typeof command !== "string") return false;
+  return (
+    /(?:dietcode|scaledown)/i.test(command) &&
+    /(?:user-prompt-submit|post-tool-use|pre-compact|status)\.js/.test(command)
+  );
+}
+
+// Removes DietCode's commands from one event's matcher groups and keeps
+// everything else: other groups untouched, and user hooks that share a group
+// with ours keep that group (minus our command). `alsoOurs` covers the exact
+// commands being installed, for checkouts whose path doesn't name the package.
+function withoutOurHooks(groups: unknown, alsoOurs: ReadonlySet<string> = new Set()): unknown[] {
+  if (!Array.isArray(groups)) return [];
+  const kept: unknown[] = [];
+  for (const group of groups) {
+    const inner = (group as { hooks?: unknown } | null)?.hooks;
+    if (!Array.isArray(inner)) {
+      kept.push(group);
+      continue;
+    }
+    const rest = inner.filter((h) => {
+      const command = (h as { command?: unknown } | null)?.command;
+      return !isOurHookCommand(command) && !alsoOurs.has(command as string);
+    });
+    if (rest.length === inner.length) kept.push(group);
+    else if (rest.length > 0) kept.push({ ...(group as object), hooks: rest });
+  }
+  return kept;
+}
+
+// Installs/refreshes DietCode's hooks and status line in a Claude Code
+// settings object without disturbing the user's own: our previous commands are
+// replaced in place of being appended twice, user hooks on the same events are
+// preserved, and a statusLine the user configured themselves is left alone.
+// Returns false when the user's own statusLine was kept.
+export function applyClaudeHooks(
+  settings: Record<string, unknown>,
+  commands: Record<ClaudeHookEvent, string>,
+  statusCommand: string
+): boolean {
+  const ours = new Set([...Object.values(commands), statusCommand]);
+  const hooks = (settings.hooks as Record<string, unknown[]>) ?? {};
+  for (const event of CLAUDE_HOOK_EVENTS) {
+    hooks[event] = [
+      ...withoutOurHooks(hooks[event], ours),
+      { matcher: "", hooks: [{ type: "command", command: commands[event] }] },
+    ];
+  }
+  settings.hooks = hooks;
+
+  const current = settings.statusLine as { command?: unknown } | undefined;
+  if (current && !isOurHookCommand(current.command) && !ours.has(current.command as string)) {
+    return false;
+  }
+  settings.statusLine = {
+    type: "command",
+    command: statusCommand,
+    refreshInterval: 5000,
+  };
+  return true;
+}
+
 // Resolved lazily (not at module load) so the path reflects $HOME at call time —
 // important for tests that sandbox HOME, and harmless in production.
 const claudeSettingsPath = () => resolve(homedir(), ".claude", "settings.json");
@@ -74,35 +145,25 @@ function reconcileClaude(): boolean {
 
   if (!claudeIsConfigured(settings)) return false;
 
-  const hooks = (settings.hooks as Record<string, unknown[]>) ?? {};
-  hooks.UserPromptSubmit = [
-    { matcher: "", hooks: [{ type: "command", command: HOOK("user-prompt-submit.js") }] },
-  ];
-  hooks.PostToolUse = [
-    { matcher: "", hooks: [{ type: "command", command: HOOK("post-tool-use.js") }] },
-  ];
-  hooks.PreCompact = [
-    { matcher: "", hooks: [{ type: "command", command: HOOK("pre-compact.js") }] },
-  ];
-  settings.hooks = hooks;
-
-  settings.statusLine = {
-    type: "command",
-    command: HOOK("status.js"),
-    refreshInterval: 5000,
-  };
+  applyClaudeHooks(
+    settings,
+    {
+      UserPromptSubmit: HOOK("user-prompt-submit.js"),
+      PostToolUse: HOOK("post-tool-use.js"),
+      PreCompact: HOOK("pre-compact.js"),
+    },
+    HOOK("status.js")
+  );
 
   // Active agent name shown by Claude Code. Migrate the pre-rename value.
   if (settings.agent === "scaledown" || settings.agent === "dietcode" || !settings.agent) {
     settings.agent = "DietCode";
   }
 
-  const env = (settings.env as Record<string, string>) ?? {};
-  if (!env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) {
-    env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE =
-      process.env.SCALEDOWN_COMPACT_THRESHOLD ?? "50";
-  }
-  settings.env = env;
+  // CLAUDE_AUTOCOMPACT_PCT_OVERRIDE is deliberately not touched here: it changes
+  // when Claude Code compacts, so only `dietcode setup` writes it, and only when
+  // the user opted in via SCALEDOWN_COMPACT_THRESHOLD. Re-adding it on every
+  // reconcile resurrected a value the user had removed.
 
   delete settings._scaledownVersion; // migrate pre-rename stamp
   settings._dietcodeVersion = PKG_VERSION;
@@ -228,17 +289,6 @@ function safe(fn: () => boolean): boolean {
 // package itself or the ~/.scaledown data dir (API key, stats).
 // ---------------------------------------------------------------------------
 
-// Identifies a hook entry we own — matches DietCode and pre-rename Scaledown
-// installs by package name or by our hook filenames.
-function isOurHookEntry(entry: unknown): boolean {
-  const json = JSON.stringify(entry);
-  return (
-    json.includes("dietcode") ||
-    json.includes("scaledown") ||
-    /user-prompt-submit\.js|post-tool-use\.js|pre-compact\.js|status\.js/.test(json)
-  );
-}
-
 function uninstallClaude(): boolean {
   const path = claudeSettingsPath();
   if (!existsSync(path)) return false;
@@ -253,11 +303,11 @@ function uninstallClaude(): boolean {
   let changed = false;
 
   if (hooks) {
-    for (const event of ["UserPromptSubmit", "PostToolUse", "PreCompact"]) {
+    for (const event of CLAUDE_HOOK_EVENTS) {
       const arr = hooks[event];
       if (!Array.isArray(arr)) continue;
-      const kept = arr.filter((entry) => !isOurHookEntry(entry));
-      if (kept.length !== arr.length) changed = true;
+      const kept = withoutOurHooks(arr);
+      if (JSON.stringify(kept) !== JSON.stringify(arr)) changed = true;
       if (kept.length > 0) hooks[event] = kept;
       else delete hooks[event];
     }
@@ -265,7 +315,7 @@ function uninstallClaude(): boolean {
   }
 
   const statusLine = settings.statusLine as { command?: string } | undefined;
-  if (statusLine && typeof statusLine.command === "string" && isOurHookEntry(statusLine)) {
+  if (statusLine && isOurHookCommand(statusLine.command)) {
     delete settings.statusLine;
     changed = true;
   }
