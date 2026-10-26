@@ -9,7 +9,7 @@ Every time you submit a prompt, the plugin (via hooks in Claude Code and Codex C
 1. **Classifies your intent** so the agent picks the right tool without guessing
 2. **Compresses large contexts** automatically when you paste in a big codebase and ask a retrieval-style question — reducing token usage by 50–70% before the prompt reaches the model
 3. **Compresses large tool outputs** (`PostToolUse`) — `ls`, `grep`, `git diff/log/status` are structurally compacted with zero latency, and anything still large is run through Scaledown before it enters context
-4. **Tracks token savings** — every compression/summarization is counted, shown live in the Claude Code status line (`↓ 125.4K saved · 747 reqs`)
+4. **Estimates token savings** — every compression/summarization is counted, shown live in the Claude Code status line (`↓ ~125.4K tokens saved (est.) · 747 reqs`). This is an estimate, not billed usage; see [How savings are estimated](#how-savings-are-estimated)
 
 And — the big one for **real, per-turn token savings** — an optional **proxy mode**:
 
@@ -92,6 +92,17 @@ there's no recursion; run the unwrapped CLI anytime with `command claude`.
 proxy session it just shows your savings; in a plain `claude` session it appends
 `DietCode compaction off` as a reminder. (The agent name stays `DietCode` either
 way — it's static config and can't change per session.)
+
+### How savings are estimated
+
+The status line figure is an **estimate**. It is not a measurement of what Anthropic billed:
+
+- **Tokens** are estimated from character counts (≈4 characters per token), not from the model's tokenizer.
+- **Proxy** savings are the estimated input tokens removed from a forwarded `/v1/messages` request. They are booked only after the upstream API accepts the request (2xx). `count_tokens` preflight calls and failed or rejected requests are never counted.
+- **Net dollars** (`est. net $…`) price removed tokens at a fixed Anthropic cache-read rate ($0.30/MTok) and subtract the ScaleDown call's own cost ($0.05/MTok). They do not use the selected model's rates. A fold that cost more than it saved counts as negative, so the total can go down.
+- **Hooks** (`UserPromptSubmit`/`PostToolUse`) add their own character-delta estimates.
+
+For actual spend, use the usage reported by the Anthropic Console or API responses.
 
 Prefer to manage it yourself? Run the proxy in the foreground and set the env var:
 

@@ -3,6 +3,10 @@
 // count_tokens) via progressive compaction, then streams the upstream response
 // back untouched. Everything else is verbatim passthrough. It must NEVER break a
 // request — every error path forwards the original bytes.
+//
+// Savings are booked to stats only for generation requests (/v1/messages) that
+// the upstream accepted (2xx): count_tokens is a preflight that bills nothing,
+// and a rejected or failed request realised no saving.
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "http";
 import { Readable } from "stream";
@@ -20,8 +24,11 @@ const STRIP_REQUEST_HEADERS = new Set([
   "connection",
 ]);
 
+const MESSAGES_PATH = "/v1/messages";
+const COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
+
 function isMessagesPath(pathname: string): boolean {
-  return pathname === "/v1/messages" || pathname === "/v1/messages/count_tokens";
+  return pathname === MESSAGES_PATH || pathname === COUNT_TOKENS_PATH;
 }
 
 function readBody(req: IncomingMessage): Promise<Buffer> {
@@ -96,6 +103,8 @@ export function createProxyServer(config: Config, client: ScaledownClient): Serv
     const raw = await readBody(req).catch(() => Buffer.alloc(0));
 
     let outBody: Buffer | string = raw;
+    // Savings estimate for this request, booked only once upstream accepts it.
+    let pending: { sessionId: string; savedTokens: number; netSavingsUsd: number } | null = null;
 
     if (!proxy.disable && method === "POST" && isMessagesPath(url.pathname) && raw.length > 0) {
       try {
@@ -111,8 +120,9 @@ export function createProxyServer(config: Config, client: ScaledownClient): Serv
               `saved ~${result.savedTokens} tokens (~$${result.netSavingsUsd.toFixed(4)})\n`
           );
         }
-        if (result.savedTokens > 0) addSaving(sessionId, result.savedTokens);
-        addRequest();
+        if (url.pathname === MESSAGES_PATH) {
+          pending = { sessionId, savedTokens: result.savedTokens, netSavingsUsd: result.netSavingsUsd };
+        }
         outBody = JSON.stringify(result.body);
       } catch (err) {
         // Fail-open: forward the original request unchanged.
@@ -130,6 +140,14 @@ export function createProxyServer(config: Config, client: ScaledownClient): Serv
         headers,
         body: noBody ? undefined : typeof outBody === "string" ? outBody : new Uint8Array(outBody),
       });
+      if (pending && upstream.ok) {
+        try {
+          addSaving(pending.sessionId, pending.savedTokens, pending.netSavingsUsd);
+          addRequest();
+        } catch {
+          // Stats are best-effort; never fail a request over them.
+        }
+      }
       await pipeUpstream(upstream, res);
     } catch (err) {
       // Upstream unreachable — surface a clean 502 rather than hanging.

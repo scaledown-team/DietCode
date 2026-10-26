@@ -6,6 +6,7 @@ import { checkForUpdate, triggerBackgroundUpdate, reconcileIfStale } from "../sr
 
 interface StatsFile {
   totalSaved: number;
+  estimatedNetUsd?: number;
   totalRequests: number;
   sessions: Record<string, number>;
   contextWindow?: { current_tokens: number; max_tokens: number };
@@ -79,7 +80,13 @@ async function main(): Promise<void> {
     parts.push(`[${bar}] ${pct}% ctx`);
   }
 
-  parts.push(`↓ ${formatTokenCount(totalSaved)} saved`);
+  // An estimate (character-based token counts, fixed pricing assumptions), not
+  // measured billing — the "~" and "est." keep it from reading as an invoice.
+  parts.push(`↓ ~${formatTokenCount(totalSaved)} tokens saved (est.)`);
+  if (typeof stats.estimatedNetUsd === "number" && stats.estimatedNetUsd !== 0) {
+    const usd = stats.estimatedNetUsd;
+    parts.push(`est. net ${usd < 0 ? "-" : ""}$${Math.abs(usd).toFixed(2)}`);
+  }
   if (totalRequests > 0) parts.push(`${totalRequests} reqs`);
 
   // Off-proxy nudge: compaction (real token savings) only runs via the proxy.

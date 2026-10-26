@@ -3,7 +3,11 @@ import { homedir } from "os";
 import { resolve } from "path";
 
 interface StatsFile {
+  /** Estimated input tokens removed from requests (character-based estimate, not billed usage). */
   totalSaved: number;
+  /** Running estimate of net dollars saved by proxy compaction, including
+   * folds that cost more than they saved (negative contributions). */
+  estimatedNetUsd?: number;
   totalRequests: number;
   sessions: Record<string, number>;
   contextWindow?: { current_tokens: number; max_tokens: number };
@@ -25,11 +29,19 @@ function writeStats(stats: StatsFile): void {
   writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2) + "\n", "utf8");
 }
 
-export function addSaving(sessionId: string, tokens: number): void {
-  if (!isFinite(tokens) || tokens <= 0) return;
+// `tokens` is an estimated input-token reduction (only positive values count);
+// `netUsd`, when given, is the estimated net dollar effect and is accumulated
+// with its sign so unfavourable folds offset favourable ones.
+export function addSaving(sessionId: string, tokens: number, netUsd?: number): void {
+  const hasTokens = isFinite(tokens) && tokens > 0;
+  const hasUsd = netUsd !== undefined && isFinite(netUsd) && netUsd !== 0;
+  if (!hasTokens && !hasUsd) return;
   const stats = readStats();
-  stats.totalSaved = (stats.totalSaved ?? 0) + tokens;
-  stats.sessions[sessionId] = (stats.sessions[sessionId] ?? 0) + tokens;
+  if (hasTokens) {
+    stats.totalSaved = (stats.totalSaved ?? 0) + tokens;
+    stats.sessions[sessionId] = (stats.sessions[sessionId] ?? 0) + tokens;
+  }
+  if (hasUsd) stats.estimatedNetUsd = (stats.estimatedNetUsd ?? 0) + netUsd;
   writeStats(stats);
 }
 
