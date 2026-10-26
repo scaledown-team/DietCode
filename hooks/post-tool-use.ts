@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { ScaledownClient } from "../src/client.js";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, type Config } from "../src/config.js";
 import { estimateTokens } from "../src/niah.js";
 import { addRequest, addSaving } from "../src/stats.js";
 
@@ -13,7 +13,7 @@ type CommandType =
   | "read"
   | "generic";
 
-interface HookInput {
+export interface HookInput {
   tool_name?: string;
   tool_input?: unknown;
   tool_response?: unknown;
@@ -55,11 +55,19 @@ const CODE_EXTENSIONS = new Set([
 ]);
 
 // Extracts the primary text content from a tool response.
-// Handles Bash {output}, Read/MCP {content}, and plain strings.
+// Handles Claude Code's Bash {stdout, stderr, ...} and Read
+// {type: "text", file: {content, ...}} shapes, plus plain strings and the
+// generic {output}/{content}/{text} shapes used by other tools.
 export function extractText(toolResponse: unknown): string | null {
   if (typeof toolResponse === "string") return toolResponse;
   if (toolResponse !== null && typeof toolResponse === "object") {
     const r = toolResponse as Record<string, unknown>;
+    if (typeof r.stdout === "string") {
+      // Image output is base64 data, not text — never rewrite it.
+      return r.isImage === true ? null : r.stdout;
+    }
+    const file = readFileField(r);
+    if (file) return file.content as string;
     if (typeof r.output === "string") return r.output;
     if (typeof r.content === "string") return r.content;
     if (typeof r.text === "string") return r.text;
@@ -67,16 +75,40 @@ export function extractText(toolResponse: unknown): string | null {
   return null;
 }
 
-// Returns a new tool_response with the text field replaced by newText.
+// Returns a new tool_response with the text field replaced by newText, keeping
+// every other field (stderr, interrupted, file metadata, ...) unchanged so the
+// result still matches the tool's output shape.
 export function replaceText(toolResponse: unknown, newText: string): unknown {
   if (typeof toolResponse === "string") return newText;
   if (toolResponse !== null && typeof toolResponse === "object") {
     const r = toolResponse as Record<string, unknown>;
+    if (typeof r.stdout === "string") {
+      return r.isImage === true ? toolResponse : { ...r, stdout: newText };
+    }
+    const file = readFileField(r);
+    if (file) return { ...r, file: { ...file, content: newText } };
     if (typeof r.output === "string") return { ...r, output: newText };
     if (typeof r.content === "string") return { ...r, content: newText };
     if (typeof r.text === "string") return { ...r, text: newText };
   }
   return toolResponse;
+}
+
+function readFileField(r: Record<string, unknown>): Record<string, unknown> | null {
+  if (r.type !== "text" || r.file === null || typeof r.file !== "object") return null;
+  const file = r.file as Record<string, unknown>;
+  return typeof file.content === "string" ? file : null;
+}
+
+// Builds the hook's stdout per the Claude Code PostToolUse contract: the
+// replacement must be nested under hookSpecificOutput.updatedToolOutput and
+// match the tool's own output shape (a top-level `tool_response` is ignored).
+export function postToolUseOutput(updatedToolOutput: unknown): {
+  hookSpecificOutput: { hookEventName: "PostToolUse"; updatedToolOutput: unknown };
+} {
+  return {
+    hookSpecificOutput: { hookEventName: "PostToolUse", updatedToolOutput },
+  };
 }
 
 export function detectCommandType(
@@ -406,16 +438,95 @@ function applyStructuralFilter(
   }
 }
 
+export interface PostToolResult {
+  /** Replacement tool output, or null to leave the original untouched. */
+  updatedToolOutput: unknown | null;
+  /** Estimated tokens removed from the tool output. */
+  saved: number;
+  /** Scaledown API calls made. */
+  requests: number;
+}
+
+type PostToolClient = Pick<ScaledownClient, "compress" | "summarize">;
+
+const UNCHANGED: PostToolResult = { updatedToolOutput: null, saved: 0, requests: 0 };
+
+// Decides what (if anything) replaces a tool's output. Pure apart from the
+// Scaledown calls and stderr logging: stats are booked by the caller only
+// after the replacement has actually been emitted.
+export async function processToolResponse(
+  input: HookInput,
+  config: Pick<Config, "postToolDisable" | "postToolThreshold" | "compressRate">,
+  client: PostToolClient
+): Promise<PostToolResult> {
+  const { tool_name, tool_input, tool_response } = input;
+  if (tool_response === undefined || config.postToolDisable) return UNCHANGED;
+
+  const text = extractText(tool_response);
+  if (text === null) return UNCHANGED;
+
+  const toolName = tool_name ?? "generic";
+  const commandType = detectCommandType(toolName, tool_input);
+
+  // Structural filter first: zero latency, no API call.
+  const filtered = applyStructuralFilter(commandType, tool_input, text);
+  const structuralSaving = Math.max(0, estimateTokens(text) - estimateTokens(filtered));
+  if (structuralSaving > 0) {
+    process.stderr.write(
+      `dietcode: structural filter (${commandType}) saved ${structuralSaving} tokens\n`
+    );
+  }
+  const filteredResult: PostToolResult =
+    filtered !== text
+      ? { updatedToolOutput: replaceText(tool_response, filtered), saved: structuralSaving, requests: 0 }
+      : UNCHANGED;
+
+  if (estimateTokens(filtered) < config.postToolThreshold) return filteredResult;
+
+  try {
+    if (shouldSummarize(toolName, tool_input)) {
+      const result = await client.summarize(filtered);
+      const summarizeSaved = estimateTokens(filtered) - estimateTokens(result.summary);
+      process.stderr.write(
+        `dietcode: summarized Read output (${result.input_chars} → ${result.output_chars} chars, saved ~${filtered.length - result.output_chars})\n`
+      );
+      return {
+        updatedToolOutput: replaceText(tool_response, result.summary),
+        saved: structuralSaving + Math.max(0, summarizeSaved),
+        requests: 1,
+      };
+    }
+    // The compress endpoint rejects an empty prompt (HTTP 200 + error body),
+    // so pass a non-empty instruction alongside the tool output as context.
+    const result = await client.compress(
+      filtered,
+      "Preserve this tool output.",
+      config.compressRate
+    );
+    const origTokens = result.original_prompt_tokens ?? estimateTokens(filtered);
+    const compTokens = result.compressed_prompt_tokens ?? (result.compressed_prompt ? estimateTokens(result.compressed_prompt) : 0);
+    const saved = origTokens - compTokens;
+    process.stderr.write(
+      `dietcode: compressed tool output (${origTokens} → ${compTokens} tokens, saved ${saved})\n`
+    );
+    return {
+      updatedToolOutput: replaceText(tool_response, result.compressed_prompt),
+      saved: structuralSaving + Math.max(0, saved),
+      requests: 1,
+    };
+  } catch (err) {
+    process.stderr.write(
+      `dietcode: post-tool compression failed, using filtered output: ${String(err)}\n`
+    );
+    // Fail open: emit structurally filtered output even when API fails.
+    return filteredResult;
+  }
+}
+
 async function main(): Promise<void> {
   const raw = await readStdin();
   const input: HookInput = JSON.parse(raw || "{}");
-  const { tool_name, tool_input, tool_response, session_id } = input;
-  const sessionId = session_id ?? "unknown";
-
-  if (tool_response === undefined) {
-    process.stdout.write("{}");
-    return;
-  }
+  const sessionId = input.session_id ?? "unknown";
 
   let config;
   try {
@@ -425,89 +536,14 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (config.postToolDisable) {
+  const result = await processToolResponse(input, config, new ScaledownClient(config.apiKey));
+  if (result.updatedToolOutput === null) {
     process.stdout.write("{}");
     return;
   }
-
-  const text = extractText(tool_response);
-  if (text === null) {
-    process.stdout.write("{}");
-    return;
-  }
-
-  const toolName = tool_name ?? "generic";
-  const commandType = detectCommandType(toolName, tool_input);
-
-  // Structural filter first: zero latency, no API call.
-  const filtered = applyStructuralFilter(commandType, tool_input, text);
-  const structuralSaving = estimateTokens(text) - estimateTokens(filtered);
-  if (structuralSaving > 0) {
-    process.stderr.write(
-      `dietcode: structural filter (${commandType}) saved ${structuralSaving} tokens\n`
-    );
-    addSaving(sessionId, structuralSaving);
-  }
-
-  if (estimateTokens(filtered) < config.postToolThreshold) {
-    if (filtered !== text) {
-      process.stdout.write(
-        JSON.stringify({ tool_response: replaceText(tool_response, filtered) })
-      );
-    } else {
-      process.stdout.write("{}");
-    }
-    return;
-  }
-
-  const client = new ScaledownClient(config.apiKey);
-  try {
-    if (shouldSummarize(toolName, tool_input)) {
-      const result = await client.summarize(filtered);
-      const summarizeSaved = estimateTokens(filtered) - estimateTokens(result.summary);
-      process.stderr.write(
-        `dietcode: summarized Read output (${result.input_chars} → ${result.output_chars} chars, saved ~${filtered.length - result.output_chars})\n`
-      );
-      addSaving(sessionId, summarizeSaved);
-      addRequest();
-      process.stdout.write(
-        JSON.stringify({ tool_response: replaceText(tool_response, result.summary) })
-      );
-    } else {
-      // The compress endpoint rejects an empty prompt (HTTP 200 + error body),
-      // so pass a non-empty instruction alongside the tool output as context.
-      const result = await client.compress(
-        filtered,
-        "Preserve this tool output.",
-        config.compressRate
-      );
-      const origTokens = result.original_prompt_tokens ?? estimateTokens(filtered);
-      const compTokens = result.compressed_prompt_tokens ?? (result.compressed_prompt ? estimateTokens(result.compressed_prompt) : 0);
-      const saved = origTokens - compTokens;
-      process.stderr.write(
-        `dietcode: compressed tool output (${origTokens} → ${compTokens} tokens, saved ${saved})\n`
-      );
-      addSaving(sessionId, saved);
-      addRequest();
-      process.stdout.write(
-        JSON.stringify({
-          tool_response: replaceText(tool_response, result.compressed_prompt),
-        })
-      );
-    }
-  } catch (err) {
-    process.stderr.write(
-      `dietcode: post-tool compression failed, using filtered output: ${String(err)}\n`
-    );
-    // Fail open: emit structurally filtered output even when API fails.
-    if (filtered !== text) {
-      process.stdout.write(
-        JSON.stringify({ tool_response: replaceText(tool_response, filtered) })
-      );
-    } else {
-      process.stdout.write("{}");
-    }
-  }
+  process.stdout.write(JSON.stringify(postToolUseOutput(result.updatedToolOutput)));
+  addSaving(sessionId, result.saved);
+  for (let i = 0; i < result.requests; i++) addRequest();
 }
 
 function readStdin(): Promise<string> {

@@ -1,6 +1,6 @@
 # DietCode Context Optimization
 
-DietCode is active for this session via Codex CLI's hooks (`UserPromptSubmit`, `PostToolUse`, `PreCompact`) — intent classification, large-prompt compression, and tool-output compression all happen automatically. There is nothing to call for these; they run before your turn even starts.
+DietCode is active for this session via Codex CLI's hooks (`UserPromptSubmit`, `PostToolUse`, `PreCompact`) — intent hints (added as context) and tool-output compression happen automatically. There is nothing to call for these; they run before your turn even starts.
 
 ## sd_retrieve
 

@@ -24,7 +24,7 @@
     "dev": "tsc --watch",
     "postinstall": "node ./dist/bin/postinstall.js || true",
     "test": "jest --testPathIgnorePatterns='/node_modules/' --testPathIgnorePatterns='real-api'",
-    "test:unit": "jest --testPathPattern='(client|niah|post-tool-use|user-prompt-submit)\\.test'",
+    "test:unit": "jest --testPathPattern='(client|niah|post-tool-use|user-prompt-submit|hook-contract)\\.test'",
     "test:integration": "jest --testPathPattern='(integration|mcp-contract)\\.test'",
     "test:config": "jest --testPathPattern='config-formats\\.test'",
     "test:hooks": "jest --testPathPattern='hook-integration\\.test' --testTimeout=120000",

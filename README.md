@@ -6,14 +6,13 @@ Optimize your coding-agent sessions with **DietCode** — automatic context comp
 
 Every time you submit a prompt, the plugin (via hooks in Claude Code and Codex CLI, or via rules guidance in Cursor):
 
-1. **Classifies your intent** so the agent picks the right tool without guessing
-2. **Compresses large contexts** automatically when you paste in a big codebase and ask a retrieval-style question — reducing token usage by 50–70% before the prompt reaches the model
-3. **Compresses large tool outputs** (`PostToolUse`) — `ls`, `grep`, `git diff/log/status` are structurally compacted with zero latency, and anything still large is run through Scaledown before it enters context
-4. **Tracks token savings** — every compression/summarization is counted, shown live in the Claude Code status line (`↓ 125.4K saved · 747 reqs`)
+1. **Classifies your intent** and adds a one-line hint (`[DietCode intent: search (82%)]`) as extra context, so the agent picks the right tool without guessing. `UserPromptSubmit` hooks can only *add* context — the prompt you typed is sent unchanged.
+2. **Compresses large tool outputs** (`PostToolUse`) — `ls`, `grep`, `git diff/log/status` are structurally compacted with zero latency, and anything still large is run through Scaledown. The result *replaces* the tool output (Bash `stdout`, Read file content) via `hookSpecificOutput.updatedToolOutput`; stderr and execution status are kept.
+3. **Tracks token savings** — every replacement that was actually emitted is counted, shown live in the Claude Code status line (`↓ 125.4K saved · 747 reqs`)
 
 And — the big one for **real, per-turn token savings** — an optional **proxy mode**:
 
-5. **Progressive compaction via proxy** (`dietcode claude`) — runs Claude Code through a local proxy that rewrites the **outgoing** request on every turn, keeping a running **Scaledown summary** of older turns so the context genuinely *shrinks* instead of growing. This is the only mode that actually reduces tokens (hooks can only *add* context), and it replaces Claude's own lossy auto-compaction. See [Proxy mode](#proxy-mode-real-token-savings).
+4. **Progressive compaction via proxy** (`dietcode claude`) — runs Claude Code through a local proxy that rewrites the **outgoing** request on every turn, keeping a running **Scaledown summary** of older turns so the context genuinely *shrinks* instead of growing. This is the only mode that actually reduces tokens (hooks can only *add* context), and it replaces Claude's own lossy auto-compaction. See [Proxy mode](#proxy-mode-real-token-savings).
 
 > **Why not a `PreCompact` hook?** Claude Code's `PreCompact` hook can't replace the compaction summary or remove anything from the window — it can only append (see [anthropics/claude-code#24965](https://github.com/anthropics/claude-code/issues/24965)). Injecting a summary there *costs* tokens rather than saving them, so the real work happens in the proxy, where DietCode controls the request payload.
 
@@ -30,15 +29,14 @@ Compression, summarization, classification, and extraction all happen automatica
 ## How it works (30 seconds)
 
 ```
-your prompt ──▶ [intent classify] ──▶ [needle-in-haystack?] ──▶ compress ──▶ agent
-                     │                        │
-                 one-line hint          /compress/raw/  (50-70% smaller)
+your prompt ──▶ [intent classify] ──▶ agent      (prompt unchanged + one-line hint as additionalContext)
+tool output ──▶ [structural filter] ──▶ [still large?] ──▶ compress/summarize ──▶ replaces the tool output
 ```
 
 - **Intent hints** route the agent to the right tool, cheaply, on every prompt.
-- **Auto-compression** only fires on prompts that are both *large* and
-  *retrieval-intent*. Conversational prompts and code you're asking it to write
-  are left untouched.
+- **Tool-output compression** only fires when a tool result is large (or an
+  `ls`/`grep`/`git` result can be compacted); small outputs are left untouched,
+  and any API failure leaves the original output in place.
 - **On-demand tools** give you manual control in any client.
 
 ---
@@ -278,7 +276,6 @@ cp node_modules/dietcode/agents-md/AGENTS.md ./AGENTS.md
 |---|---|---|---|
 | `sd_retrieve` tool | ✅ | ✅ | ✅ |
 | Auto intent hints on every prompt | ✅ hook | ❌⁵ | ✅ hook |
-| Auto compression (large prompts) | ✅ hook | ❌⁵ | ✅ hook |
 | Auto tool output compression | ✅ hook | ❌⁵ | ✅ hook (Bash only)² |
 | Progressive compaction w/ real token savings (Scaledown summarize model) | ✅ proxy⁴ | ❌ | ❌ |
 | Token-savings status line | ✅ | ❌³ | ❌³ |
@@ -294,10 +291,9 @@ cp node_modules/dietcode/agents-md/AGENTS.md ./AGENTS.md
 
 ## Usage
 
-**Automatic (Claude Code hook):** nothing to do; the hook fires on every prompt:
+**Automatic (Claude Code hook):** nothing to do; the hook fires on every prompt. Your prompt is sent as typed, and the hook adds this line as extra context (`hookSpecificOutput.additionalContext`):
 ```
 [DietCode intent: search (82%)]
-Find all places where we call the payments API
 ```
 
 **On-demand tool:** in a Claude Code proxy session, if a summary marker omits a detail you need:
@@ -333,9 +329,7 @@ Set these environment variables to tune behavior:
 | Variable | Default | Description |
 |---|---|---|
 | `SCALEDOWN_API_KEY` | — | **Required.** Your Scaledown API key |
-| `SCALEDOWN_COMPRESS_THRESHOLD` | `10000` | Token estimate above which prompt auto-compression fires |
-| `SCALEDOWN_COMPRESS_RATE` | `0.3` | How aggressively to compress (`0.3` = keep ~30% of tokens; `auto` lets the API decide) |
-| `SCALEDOWN_NIAH_DISABLE` | `false` | Set to `true` to compress all large prompts, not just retrieval-style ones |
+| `SCALEDOWN_COMPRESS_RATE` | `0.3` | How aggressively tool output is compressed (`0.3` = keep ~30% of tokens; `auto` lets the API decide) |
 | `SCALEDOWN_POST_TOOL_DISABLE` | `false` | Set to `true` to disable `PostToolUse` tool-output compression |
 | `SCALEDOWN_POST_TOOL_THRESHOLD` | `4000` | Token threshold above which tool output is sent to the API (after structural filtering) |
 | `SCALEDOWN_COMPACT_THRESHOLD` | `50` | Context-usage % that triggers compaction (also sets `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`) |
@@ -348,7 +342,7 @@ Set these environment variables to tune behavior:
 | `SCALEDOWN_PROXY_DISABLE` | `false` | Set to `true` to make the proxy a pure passthrough (no compaction) |
 
 ```bash
-export SCALEDOWN_COMPRESS_THRESHOLD=5000
+export SCALEDOWN_POST_TOOL_THRESHOLD=2000
 export SCALEDOWN_COMPRESS_RATE=0.2
 ```
 
@@ -413,12 +407,27 @@ export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50
 
 ## How compression works
 
-Kode uses a local heuristic to detect "needle-in-a-haystack" queries: prompts
-that are both large *and* retrieval-intent (`find`, `search`, `where`,
-`what does ... do`, etc.). When detected, the prompt is sent to Scaledown's
-`/compress/raw/` endpoint, which rewrites it into a semantically equivalent but
-much shorter form before the agent sees it. Long conversational prompts (e.g. code
-you're asking it to write from scratch) are left alone.
+Claude Code hooks can't rewrite the prompt you submit, so DietCode compresses
+**tool output** instead. After each tool call, `PostToolUse`:
+
+1. Applies a zero-latency structural filter to `ls`, `grep`/`rg`, and
+   `git diff/show/log/status` output.
+2. If the result is still above `SCALEDOWN_POST_TOOL_THRESHOLD`, sends it to
+   Scaledown — `/summarization/abstractive` for non-code files read with Read,
+   `/compress/raw/` for everything else.
+3. Returns the result as `hookSpecificOutput.updatedToolOutput`, in the tool's
+   own shape (Bash `stdout` with `stderr`/`interrupted` kept, Read
+   `file.content` with file metadata kept), so it **replaces** the original
+   output rather than being appended. Image output is never rewritten.
+
+If nothing changes, or the Scaledown call fails, the hook prints `{}` and the
+original output is used. Savings are only counted after a replacement has been
+emitted.
+
+Verified end-to-end with Claude Code 2.1.310 (`claude -p` with the built hooks):
+the model saw only the filtered `ls -l` output plus the intent hint. Codex CLI
+uses the same hook registration, but its output contract has not been
+independently verified.
 
 ---
 
@@ -436,6 +445,7 @@ Test the hook:
 ```bash
 echo '{"prompt":"find the function that handles auth"}' \
   | SCALEDOWN_API_KEY=your-key node dist/hooks/user-prompt-submit.js
+# → {"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"[DietCode intent: search (…)]"}}
 ```
 
 Test the MCP server starts:

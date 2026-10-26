@@ -3,6 +3,8 @@ import type { CompressResponse, SummarizeResponse } from "../src/client.js";
 import {
   extractText,
   replaceText,
+  postToolUseOutput,
+  processToolResponse,
   detectCommandType,
   filterLsOutput,
   filterGrepOutput,
@@ -10,27 +12,6 @@ import {
   filterGitLog,
   filterGitStatus,
 } from "./post-tool-use.js";
-
-const mockCompress = jest.fn<() => Promise<CompressResponse>>();
-const mockSummarize = jest.fn<() => Promise<SummarizeResponse>>();
-
-jest.mock("../src/client.js", () => ({
-  ScaledownClient: jest.fn().mockImplementation(() => ({
-    compress: mockCompress,
-    summarize: mockSummarize,
-  })),
-}));
-
-jest.mock("../src/config.js", () => ({
-  loadConfig: jest.fn().mockReturnValue({
-    apiKey: "test-key",
-    compressThreshold: 10000,
-    compressRate: 0.3,
-    niahDisable: false,
-    postToolDisable: false,
-    postToolThreshold: 4000,
-  }),
-}));
 
 const COMPRESS_RESPONSE: CompressResponse = {
   compressed_prompt: "compressed tool output",
@@ -46,12 +27,59 @@ const COMPRESS_RESPONSE: CompressResponse = {
   },
 };
 
+const CONFIG = { postToolDisable: false, postToolThreshold: 4000, compressRate: 0.3 as const };
+
+function fakeClient() {
+  return {
+    compress: jest.fn<() => Promise<CompressResponse>>().mockResolvedValue(COMPRESS_RESPONSE),
+    summarize: jest.fn<() => Promise<SummarizeResponse>>().mockResolvedValue({
+      summary: "short summary",
+      input_chars: 20000,
+      output_chars: 13,
+      latency_ms: 50,
+    }),
+  };
+}
+
+// Tool response shapes as Claude Code passes them to PostToolUse hooks.
+function bashResponse(stdout: string, extra: Record<string, unknown> = {}) {
+  return { stdout, stderr: "warning: something", interrupted: false, isImage: false, noOutputExpected: false, ...extra };
+}
+
+function readResponse(content: string) {
+  return {
+    type: "text",
+    file: { filePath: "/repo/notes.md", content, numLines: 3, startLine: 1, totalLines: 3 },
+  };
+}
+
+const LS_OUTPUT = [
+  "total 48",
+  "drwxr-xr-x  2 user  staff    64 Jan  1 12:00 src",
+  "drwxr-xr-x  2 user  staff    64 Jan  1 12:00 node_modules",
+  "-rw-r--r--  1 user  staff  1234 Jan  1 12:00 package.json",
+].join("\n");
+
+const LARGE = "line of generic build output that is not structurally filtered\n".repeat(400);
+
 describe("extractText", () => {
   it("handles plain string response", () => {
     expect(extractText("hello")).toBe("hello");
   });
 
-  it("extracts output field (Bash tool)", () => {
+  it("extracts stdout from Claude Code's Bash response", () => {
+    expect(extractText(bashResponse("bash output"))).toBe("bash output");
+  });
+
+  it("does not treat Bash image output as text", () => {
+    expect(extractText(bashResponse("iVBORw0KGgo=", { isImage: true }))).toBeNull();
+  });
+
+  it("extracts file.content from Claude Code's Read response", () => {
+    expect(extractText(readResponse("# Notes"))).toBe("# Notes");
+  });
+
+  it("extracts output field", () => {
     expect(extractText({ output: "bash output", exit_code: 0 })).toBe("bash output");
   });
 
@@ -77,6 +105,24 @@ describe("replaceText", () => {
     expect(replaceText("original", "new")).toBe("new");
   });
 
+  it("replaces Bash stdout and preserves stderr and execution status", () => {
+    const original = bashResponse("old", { interrupted: true });
+    expect(replaceText(original, "new")).toEqual({ ...original, stdout: "new" });
+  });
+
+  it("leaves Bash image output untouched", () => {
+    const original = bashResponse("iVBORw0KGgo=", { isImage: true });
+    expect(replaceText(original, "new")).toBe(original);
+  });
+
+  it("replaces Read file.content and preserves file metadata", () => {
+    const original = readResponse("old");
+    expect(replaceText(original, "new")).toEqual({
+      type: "text",
+      file: { ...original.file, content: "new" },
+    });
+  });
+
   it("replaces output field, preserves other fields", () => {
     const result = replaceText({ output: "old", exit_code: 0 }, "new") as Record<string, unknown>;
     expect(result.output).toBe("new");
@@ -94,23 +140,100 @@ describe("replaceText", () => {
   });
 });
 
-describe("post-tool-use hook: compression logic", () => {
-  beforeEach(() => {
-    mockCompress.mockResolvedValue(COMPRESS_RESPONSE);
+describe("postToolUseOutput", () => {
+  it("nests the replacement under hookSpecificOutput.updatedToolOutput", () => {
+    expect(postToolUseOutput({ stdout: "x" })).toEqual({
+      hookSpecificOutput: { hookEventName: "PostToolUse", updatedToolOutput: { stdout: "x" } },
+    });
+  });
+});
+
+describe("processToolResponse", () => {
+  it("structurally filters Bash ls output without calling Scaledown", async () => {
+    const client = fakeClient();
+    const original = bashResponse(LS_OUTPUT);
+    const result = await processToolResponse(
+      { tool_name: "Bash", tool_input: { command: "ls -l" }, tool_response: original },
+      CONFIG,
+      client
+    );
+    const updated = result.updatedToolOutput as ReturnType<typeof bashResponse>;
+    expect(updated.stdout).toContain("Summary: 1 files, 1 dirs");
+    expect(updated.stdout).not.toContain("drwxr-xr-x");
+    expect(updated.stderr).toBe(original.stderr);
+    expect(updated.interrupted).toBe(false);
+    expect(result.saved).toBeGreaterThan(0);
+    expect(result.requests).toBe(0);
+    expect(client.compress).not.toHaveBeenCalled();
   });
 
-  afterEach(() => jest.clearAllMocks());
-
-  it("compress is called for large tool output", async () => {
-    const result = await mockCompress();
-    expect(result.compressed_prompt).toBe("compressed tool output");
-    expect(result.original_prompt_tokens).toBe(5000);
-    expect(result.compressed_prompt_tokens).toBe(1500);
+  it("compresses large Bash output and replaces stdout rather than appending", async () => {
+    const client = fakeClient();
+    const result = await processToolResponse(
+      { tool_name: "Bash", tool_input: { command: "npm run build" }, tool_response: bashResponse(LARGE) },
+      CONFIG,
+      client
+    );
+    expect(client.compress).toHaveBeenCalledTimes(1);
+    expect(result.updatedToolOutput).toEqual(bashResponse("compressed tool output"));
+    expect(result.saved).toBe(3500);
+    expect(result.requests).toBe(1);
   });
 
-  it("compress failure is caught and returns original", async () => {
-    mockCompress.mockRejectedValueOnce(new Error("api error") as never);
-    await expect(mockCompress()).rejects.toThrow("api error");
+  it("summarizes large non-code Read output into file.content", async () => {
+    const client = fakeClient();
+    const result = await processToolResponse(
+      { tool_name: "Read", tool_input: { file_path: "/repo/notes.md" }, tool_response: readResponse(LARGE) },
+      CONFIG,
+      client
+    );
+    expect(client.summarize).toHaveBeenCalledTimes(1);
+    const updated = result.updatedToolOutput as ReturnType<typeof readResponse>;
+    expect(updated.file.content).toBe("short summary");
+    expect(updated.file.filePath).toBe("/repo/notes.md");
+    expect(result.requests).toBe(1);
+  });
+
+  it("compresses large MCP-style text output", async () => {
+    const client = fakeClient();
+    const result = await processToolResponse(
+      { tool_name: "mcp__docs__fetch", tool_input: {}, tool_response: { content: LARGE } },
+      CONFIG,
+      client
+    );
+    expect(result.updatedToolOutput).toEqual({ content: "compressed tool output" });
+  });
+
+  it("leaves small unfiltered output untouched", async () => {
+    const client = fakeClient();
+    const result = await processToolResponse(
+      { tool_name: "Bash", tool_input: { command: "echo hi" }, tool_response: bashResponse("hi\n") },
+      CONFIG,
+      client
+    );
+    expect(result).toEqual({ updatedToolOutput: null, saved: 0, requests: 0 });
+    expect(client.compress).not.toHaveBeenCalled();
+  });
+
+  it("leaves output untouched and books nothing when compression fails", async () => {
+    const client = fakeClient();
+    client.compress.mockRejectedValueOnce(new Error("api error") as never);
+    const result = await processToolResponse(
+      { tool_name: "Bash", tool_input: { command: "npm run build" }, tool_response: bashResponse(LARGE) },
+      CONFIG,
+      client
+    );
+    expect(result).toEqual({ updatedToolOutput: null, saved: 0, requests: 0 });
+  });
+
+  it("does nothing when disabled", async () => {
+    const client = fakeClient();
+    const result = await processToolResponse(
+      { tool_name: "Bash", tool_input: { command: "ls -l" }, tool_response: bashResponse(LS_OUTPUT) },
+      { ...CONFIG, postToolDisable: true },
+      client
+    );
+    expect(result.updatedToolOutput).toBeNull();
   });
 });
 

@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 import { readFileSync } from "fs";
-import { ScaledownClient } from "../src/client.js";
+import { ScaledownClient, type ClassifyResponse } from "../src/client.js";
 import { loadConfig } from "../src/config.js";
-import { isNiahQuery } from "../src/niah.js";
-import { addRequest, addSaving, setContextWindow } from "../src/stats.js";
+import { addRequest, setContextWindow } from "../src/stats.js";
 
 interface ContextWindow {
   current_tokens: number;
@@ -70,7 +69,6 @@ async function main(): Promise<void> {
   const raw = await readStdin();
   const input: HookInput = JSON.parse(raw || "{}");
   const prompt = input.prompt;
-  const sessionId = input.session_id ?? "unknown";
 
   if (!prompt) {
     process.stdout.write("{}");
@@ -112,65 +110,36 @@ async function main(): Promise<void> {
     }
   }
 
+  // Intent classification — fail-open. UserPromptSubmit cannot replace or
+  // shrink the submitted prompt; the only supported output is extra context
+  // (hookSpecificOutput.additionalContext), so the hint is all we emit.
   const client = new ScaledownClient(config.apiKey);
-  let modifiedPrompt = prompt;
-
-  // Step 1: Intent classification — always runs, fail-open
   try {
     const classification = await client.classify(prompt, INTENT_LABELS);
-    const topScore = classification.scores[classification.top_label];
-    const hint = `[DietCode intent: ${classification.top_label} (${Math.round(topScore * 100)}%)]`;
-    modifiedPrompt = `${hint}\n${modifiedPrompt}`;
-    process.stderr.write(
-      `dietcode: intent=${classification.top_label} (${Math.round(topScore * 100)}%)\n`
-    );
+    const hint = intentHint(classification);
+    process.stderr.write(`dietcode: ${hint.slice(1, -1)}\n`);
+    process.stdout.write(JSON.stringify(userPromptSubmitOutput(hint)));
     addRequest();
   } catch (err) {
     process.stderr.write(
       `dietcode: classify failed, skipping hint: ${String(err)}\n`
     );
-  }
-
-  // Step 2: NIAH compression — only for large retrieval-style prompts
-  const shouldCompress =
-    config.niahDisable || isNiahQuery(prompt, config.compressThreshold);
-
-  if (!shouldCompress) {
-    process.stderr.write(`dietcode: compression skipped (prompt below threshold or not retrieval-style)\n`);
-  } else {
-    try {
-      const result = await client.compress(
-        prompt,
-        "Complete the request above.",
-        config.compressRate
-      );
-      const saved =
-        result.original_prompt_tokens - result.compressed_prompt_tokens;
-      const pct = Math.round((saved / result.original_prompt_tokens) * 100);
-      process.stderr.write(
-        `dietcode: compressed prompt (${result.original_prompt_tokens} → ${result.compressed_prompt_tokens} tokens, -${pct}%)\n`
-      );
-      addSaving(sessionId, saved);
-      addRequest();
-
-      // Re-apply the intent hint on top of the compressed output
-      const classifyHintMatch = modifiedPrompt.match(
-        /^\[DietCode intent: .+?\]\n/
-      );
-      const hint = classifyHintMatch ? classifyHintMatch[0] : "";
-      modifiedPrompt = `${hint}${result.compressed_prompt}`;
-    } catch (err) {
-      process.stderr.write(
-        `dietcode: compression failed, using original: ${String(err)}\n`
-      );
-    }
-  }
-
-  if (modifiedPrompt === prompt) {
     process.stdout.write("{}");
-  } else {
-    process.stdout.write(JSON.stringify({ prompt: modifiedPrompt }));
   }
+}
+
+export function intentHint(classification: ClassifyResponse): string {
+  const topScore = classification.scores[classification.top_label] ?? 0;
+  return `[DietCode intent: ${classification.top_label} (${Math.round(topScore * 100)}%)]`;
+}
+
+// Builds the hook's stdout per the Claude Code UserPromptSubmit contract.
+export function userPromptSubmitOutput(additionalContext: string): {
+  hookSpecificOutput: { hookEventName: "UserPromptSubmit"; additionalContext: string };
+} {
+  return {
+    hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext },
+  };
 }
 
 function readStdin(): Promise<string> {

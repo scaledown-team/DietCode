@@ -387,10 +387,9 @@ async function main(): Promise<void> {
 Active features (hooks, always on):
   • "dietcode" badge shown in the Claude Code text input
   • Co-Authored-By: DietCode trailer added to every git commit
-  • Intent hint prepended to every prompt (helps Claude pick the right tool)
+  • Intent hint added as context to every prompt (helps Claude pick the right tool)
   • Context progress bar shown on every prompt (e.g. [████░░░░░░] 42%)
-  • Auto-compression for large NIAH-style queries (threshold: ${process.env.SCALEDOWN_COMPRESS_THRESHOLD ?? "10000"} tokens, rate: ${process.env.SCALEDOWN_COMPRESS_RATE ?? "0.3"})
-  • Post-tool output compression — large tool results are compressed before entering context (threshold: ${process.env.SCALEDOWN_POST_TOOL_THRESHOLD ?? "4000"} tokens)
+  • Post-tool output compression — large tool results are replaced by a compressed version before entering context (threshold: ${process.env.SCALEDOWN_POST_TOOL_THRESHOLD ?? "4000"} tokens)
   • Token savings counter shown below the Claude Code text input (updates every 5s)
 
 Proxy features (when you run \`dietcode claude\`):
