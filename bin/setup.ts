@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import { ScaledownClient } from "../src/client.js";
 import { CONFIG_FILE } from "../src/config.js";
 import { CURSOR_RULES_CONTENT } from "../src/reconcile.js";
+import { cacheDir, clearProxyStore, sessionDir } from "../src/proxy/store.js";
 
 // TOML helpers (no external dep — we only need simple array-of-table writes)
 function tomlStringValue(s: string): string {
@@ -387,10 +388,9 @@ async function main(): Promise<void> {
 Active features (hooks, always on):
   • "dietcode" badge shown in the Claude Code text input
   • Co-Authored-By: DietCode trailer added to every git commit
-  • Intent hint prepended to every prompt (helps Claude pick the right tool)
+  • Intent hint added as context to every prompt (helps Claude pick the right tool)
   • Context progress bar shown on every prompt (e.g. [████░░░░░░] 42%)
-  • Auto-compression for large NIAH-style queries (threshold: ${process.env.SCALEDOWN_COMPRESS_THRESHOLD ?? "10000"} tokens, rate: ${process.env.SCALEDOWN_COMPRESS_RATE ?? "0.3"})
-  • Post-tool output compression — large tool results are compressed before entering context (threshold: ${process.env.SCALEDOWN_POST_TOOL_THRESHOLD ?? "4000"} tokens)
+  • Post-tool output compression — large tool results are replaced by a compressed version before entering context (threshold: ${process.env.SCALEDOWN_POST_TOOL_THRESHOLD ?? "4000"} tokens)
   • Token savings counter shown below the Claude Code text input (updates every 5s)
 
 Proxy features (when you run \`dietcode claude\`):
@@ -401,6 +401,9 @@ Environment variables:
   SCALEDOWN_COMPACT_THRESHOLD=N      — context % that triggers compaction (default: 50)
   SCALEDOWN_SHOW_PROGRESS=false      — disable the per-turn context progress bar
   SCALEDOWN_POST_TOOL_DISABLE=true   — disable post-tool compression
+  SCALEDOWN_POST_TOOL_LOCAL_ONLY=true — post-tool structural filter only (never sends tool output)
+  SCALEDOWN_CLASSIFY_DISABLE=true    — skip intent classification (never sends prompts)
+  SCALEDOWN_LOCAL_ONLY=true          — no Scaledown requests at all (no API key needed)
   SCALEDOWN_POST_TOOL_THRESHOLD=N    — token threshold for tool output compression (default: 4000)
   SCALEDOWN_PROXY_COMPACT_THRESHOLD=N — tokens that trigger a proxy compaction step (default: 50000)
   SCALEDOWN_PROXY_RECENT_TURNS=N     — recent turns kept verbatim by the proxy (default: 4)
@@ -455,7 +458,8 @@ async function uninstall(): Promise<void> {
 
 Left in place (remove manually if you want them gone):
   • Package:   npm uninstall -g dietcode
-  • API key + stats:  rm -rf ~/.scaledown
+  • API key + stats + proxy cache:  rm -rf ~/.scaledown
+    (just the proxy cache: dietcode clear-cache)
   • Shell env vars in your ~/.zshrc / ~/.bashrc (SCALEDOWN_API_KEY, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE)
   • Cursor/Codex MCP server entries you added by hand
 
@@ -463,10 +467,20 @@ Restart your coding tool for changes to take effect.
 `);
 }
 
+function clearCache(): void {
+  const { sessions, originals } = clearProxyStore();
+  console.log(
+    `Removed ${sessions} proxy session file(s) from ${sessionDir()}\n` +
+      `Removed ${originals} stashed original(s) from ${cacheDir()}\n` +
+      "sd_retrieve can no longer recover text summarized before this point."
+  );
+}
+
 const command = process.argv[2];
 
 async function dispatch(): Promise<void> {
   if (command === "uninstall") return uninstall();
+  if (command === "clear-cache") return clearCache();
   if (command === "proxy" || command === "claude") {
     const { runProxy, runClaudeWrapper } = await import("./proxy.js");
     return command === "claude"

@@ -11,6 +11,12 @@ export interface Config {
   niahDisable: boolean;
   postToolDisable: boolean;
   postToolThreshold: number;
+  /** Apply only the local structural filter to tool output; never call Scaledown. */
+  postToolLocalOnly: boolean;
+  /** Skip per-prompt intent classification, so prompts are never sent to Scaledown. */
+  classifyDisable: boolean;
+  /** SCALEDOWN_LOCAL_ONLY: no Scaledown requests from hooks or the proxy. */
+  localOnly: boolean;
   compactThreshold: number;
   showProgress: boolean;
   maxContextTokens: number;
@@ -75,8 +81,10 @@ function readConfigFile(): { apiKey?: string } {
 }
 
 export function loadConfig(): Config {
-  const apiKey = process.env.SCALEDOWN_API_KEY ?? readConfigFile().apiKey;
-  if (!apiKey) {
+  // Local-only mode makes no Scaledown requests, so it needs no API key.
+  const localOnly = process.env.SCALEDOWN_LOCAL_ONLY === "true";
+  const apiKey = process.env.SCALEDOWN_API_KEY ?? readConfigFile().apiKey ?? "";
+  if (!apiKey && !localOnly) {
     throw new Error(
       "SCALEDOWN_API_KEY is not set.\n" +
         "Get your API key at https://scaledown.ai/dashboard, then run:\n" +
@@ -95,6 +103,12 @@ export function loadConfig(): Config {
   const niahDisable = process.env.SCALEDOWN_NIAH_DISABLE === "true";
 
   const postToolDisable = process.env.SCALEDOWN_POST_TOOL_DISABLE === "true";
+
+  const postToolLocalOnly =
+    localOnly || process.env.SCALEDOWN_POST_TOOL_LOCAL_ONLY === "true";
+
+  const classifyDisable =
+    localOnly || process.env.SCALEDOWN_CLASSIFY_DISABLE === "true";
 
   const postToolThresholdRaw = process.env.SCALEDOWN_POST_TOOL_THRESHOLD;
   const postToolThreshold = postToolThresholdRaw
@@ -118,9 +132,12 @@ export function loadConfig(): Config {
     niahDisable,
     postToolDisable,
     postToolThreshold,
+    postToolLocalOnly,
+    classifyDisable,
+    localOnly,
     compactThreshold,
     showProgress,
     maxContextTokens,
-    proxy: loadProxyConfig(),
+    proxy: localOnly ? { ...loadProxyConfig(), disable: true } : loadProxyConfig(),
   };
 }

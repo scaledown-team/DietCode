@@ -12,7 +12,9 @@ import { createHash } from "crypto";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "fs";
 import { homedir } from "os";
@@ -136,4 +138,22 @@ export function getCached(id: string): CachedBlock | null {
     // ignore
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup (`dietcode clear-cache`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Deletes all proxy session state and stashed originals. Nothing else under
+ * ~/.scaledown (config, stats) is touched. Returns how many files were removed.
+ */
+export function clearProxyStore(): { sessions: number; originals: number } {
+  const clear = (dir: string): number => {
+    if (!existsSync(dir)) return 0;
+    const count = readdirSync(dir).filter((f) => f.endsWith(".json")).length;
+    rmSync(dir, { recursive: true, force: true });
+    return count;
+  };
+  return { sessions: clear(sessionDir()), originals: clear(cacheDir()) };
 }
